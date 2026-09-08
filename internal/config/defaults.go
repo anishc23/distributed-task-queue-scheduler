@@ -40,6 +40,7 @@ func Default() *Config {
 		},
 		Worker: Worker{
 			Concurrency:       4,
+			ExecMode:          "sleep",
 			Block:             Duration(500 * time.Millisecond),
 			MetricsAddr:       ":9102",
 			FailBeforeAckRate: 0,
@@ -159,6 +160,9 @@ func (c *Config) applyDefaults() {
 
 	if c.Worker.Concurrency == 0 {
 		c.Worker.Concurrency = d.Worker.Concurrency
+	}
+	if c.Worker.ExecMode == "" {
+		c.Worker.ExecMode = d.Worker.ExecMode
 	}
 	if c.Worker.Block == 0 {
 		c.Worker.Block = d.Worker.Block

@@ -85,6 +85,10 @@ type Worker struct {
 	Name string `yaml:"name" json:"name"`
 	// Concurrency is the number of tasks executed in parallel per process.
 	Concurrency int `yaml:"concurrency" json:"concurrency"`
+	// ExecMode selects how a task's simulated duration is consumed: "sleep"
+	// occupies a slot without using CPU, "cpu" burns the duration in real
+	// computation so that slots contend for cores as real work would.
+	ExecMode string `yaml:"exec_mode" json:"exec_mode"`
 	// Block is how long XREADGROUP waits for new work before looping.
 	Block Duration `yaml:"block" json:"block"`
 	// MetricsAddr is the listen address for the Prometheus endpoint.
@@ -220,6 +224,9 @@ func (c *Config) Validate() error {
 
 	if c.Worker.Concurrency <= 0 {
 		errs = append(errs, fmt.Errorf("worker.concurrency must be > 0, got %d", c.Worker.Concurrency))
+	}
+	if !ValidExecMode(c.Worker.ExecMode) {
+		errs = append(errs, fmt.Errorf("worker.exec_mode %q must be one of %v", c.Worker.ExecMode, ExecModes()))
 	}
 	if c.Worker.Block.D() <= 0 {
 		errs = append(errs, fmt.Errorf("worker.block must be > 0, got %s", c.Worker.Block))

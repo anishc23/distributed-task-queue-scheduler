@@ -1,0 +1,83 @@
+# Real-work profile: the same experiment as experiments/full.yaml, but workers
+# burn CPU for each task's duration instead of sleeping.
+#
+#   make bench RUN_CONFIG=experiments/realwork.yaml WORKERS=2 CONCURRENCY=4
+#
+# Purpose. Every other result in this project comes from workers that sleep. A
+# sleeping worker uses no CPU, so N slots always deliver N-way parallelism and
+# "utilisation" measures slot occupancy rather than work. This profile exists to
+# test whether the scheduling conclusions survive real computation.
+#
+# Slot count. Total slots are kept at or below the core count on purpose. With
+# more CPU-bound slots than cores, tasks take longer than their declared
+# duration, capacity becomes core-bound rather than slot-bound, and the offered
+# load calculation - which derives capacity from slots and mean service time -
+# would no longer describe the system. Run this with 2 workers x 4 slots = 8 on
+# a machine with at least 8 cores. The worker logs a warning if slots exceed
+# cores.
+#
+# Reading the results. Compare against a sleep-mode run at the same load. The
+# scheduler orderings should be unchanged, since nothing about ranking depends
+# on how a task consumes its time; what can move is throughput, utilisation and
+# the measured actual_exec_ms, which will exceed the requested exec_ms if slots
+# contend.
+
+redis:
+  addr: localhost:6379
+  pool_size: 64
+
+streams:
+  namespace: tq-realwork
+
+scheduler:
+  policy: fifo
+  ingest_batch: 512
+  ingest_block: 200ms
+  dispatch_batch: 64
+  idle_sleep: 2ms
+  max_in_flight: 8
+  metrics_addr: ""
+
+worker:
+  concurrency: 4
+  exec_mode: cpu
+  metrics_addr: ""
+
+recovery:
+  enabled: true
+  interval: 500ms
+  # Generous, because a CPU-bound task under contention can legitimately run
+  # well past its declared duration and must not be reclaimed as a failure.
+  min_idle: 30s
+  batch: 256
+  max_retries: 3
+
+workload:
+  type: uniform
+  seed: 20240501
+  count: 2000
+  id_prefix: realwork
+  arrival_rate_per_sec: 200
+  max_retries: 3
+  exec:
+    min_ms: 30
+    max_ms: 70
+  priority:
+    weights: [50, 25, 15, 7, 3]
+  deadline:
+    base_ms: 300
+    exec_multiplier: 4
+    jitter_ms: 300
+  burst:
+    base_rate_per_sec: 100
+    burst_rate_per_sec: 1000
+    burst_duration: 500ms
+    burst_period: 3s
+  heavy_tail:
+    min_ms: 10
+    max_ms: 6000
+    alpha: 1.2
+
+log:
+  level: info
+  format: text

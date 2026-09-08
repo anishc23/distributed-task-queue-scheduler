@@ -53,6 +53,9 @@ scheduler:
 worker:
   name: ""            # empty derives hostname-pid
   concurrency: 4
+  # sleep occupies a slot without using CPU; cpu burns the duration in real
+  # computation so slots contend for cores as real work would.
+  exec_mode: sleep
   block: 500ms
   metrics_addr: ":9102"
   # Failure injection for testing the recovery path. Both are probabilities.

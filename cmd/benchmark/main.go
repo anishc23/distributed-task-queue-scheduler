@@ -49,6 +49,8 @@ func main() {
 	workers := fs.Int("workers", 2, "worker processes per experiment")
 	concurrency := fs.Int("concurrency", 4, "execution slots per worker process")
 	maxInFlight := fs.Int("max-in-flight", 0, "cap on dispatched-but-unfinished tasks; 0 uses the total worker slot count")
+	execMode := fs.String("exec-mode", "", "how a task consumes its duration: sleep (no CPU) or cpu (real computation).\n"+
+		"\tcpu makes execution slots contend for cores, which sleep mode cannot show.")
 	failRate := fs.Float64("fail-rate", -1, "probability a task reports an application error, within [0,1]")
 	failBeforeAck := fs.Float64("fail-before-ack-rate", -1, "probability a task is abandoned before acknowledgement, within [0,1]")
 	timeout := fs.Duration("timeout", 0, "per-experiment timeout; zero derives one from the workload size")
@@ -73,6 +75,9 @@ func main() {
 	}
 	if *rate > 0 {
 		cfg.Workload.ArrivalRatePerSec = *rate
+	}
+	if *execMode != "" {
+		cfg.Worker.ExecMode = *execMode
 	}
 	if *failRate >= 0 {
 		cfg.Worker.FailRate = *failRate

@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"math/rand"
 	"os"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,6 +38,7 @@ type Worker struct {
 	rngMu sync.Mutex
 	rng   *rand.Rand
 
+	calib     calibration
 	busyNanos atomic.Int64
 	failures  atomic.Int64
 	started   time.Time
@@ -122,11 +124,28 @@ func (w *Worker) Run(ctx context.Context) error {
 	if err := w.br.EnsureStreams(ctx); err != nil {
 		return err
 	}
+	if w.cfg.ExecMode == config.ExecModeCPU {
+		calib, err := calibrate()
+		if err != nil {
+			return err
+		}
+		w.calib = calib
+		w.log.Info("calibrated CPU execution mode",
+			"iters_per_ms", fmt.Sprintf("%.0f", calib.itersPerMs),
+			"cores", runtime.NumCPU(),
+			"slots", w.cfg.Concurrency)
+		if w.cfg.Concurrency > runtime.NumCPU() {
+			w.log.Warn("more execution slots than cores; CPU-bound tasks will contend and run longer than their declared duration",
+				"slots", w.cfg.Concurrency, "cores", runtime.NumCPU())
+		}
+	}
+
 	w.started = time.Now()
 	w.m.WorkerConcurrency.Set(float64(w.cfg.Concurrency))
 	w.closeOnce.Do(func() { close(w.ready) })
 	w.log.Info("worker started",
 		"concurrency", w.cfg.Concurrency,
+		"exec_mode", w.cfg.ExecMode,
 		"fail_rate", w.cfg.FailRate,
 		"fail_before_ack_rate", w.cfg.FailBeforeAckRate,
 		"namespace", w.br.Keys().Namespace)
@@ -304,11 +323,20 @@ func (w *Worker) execute(ctx context.Context, consumer string, msg broker.ExecMe
 	return nil
 }
 
-// simulateWork sleeps for the task's declared duration. It returns early if the
-// execution context is cancelled, which only happens after the shutdown grace
-// period has elapsed.
+// simulateWork consumes the task's declared duration, either by sleeping or by
+// burning CPU depending on the configured execution mode. It returns early if
+// the execution context is cancelled, which only happens after the shutdown
+// grace period has elapsed.
+//
+// In cpu mode the elapsed time can exceed the requested duration when more
+// slots are busy than the machine has cores. That is real contention rather
+// than a defect, and it is visible in the recorded actual_exec_ms.
 func (w *Worker) simulateWork(ctx context.Context, d time.Duration) {
 	if d <= 0 {
+		return
+	}
+	if w.cfg.ExecMode == config.ExecModeCPU {
+		w.calib.burnFor(ctx, d)
 		return
 	}
 	t := time.NewTimer(d)

@@ -25,6 +25,7 @@ func main() {
 	name := fs.String("name", "", "consumer name prefix (defaults to hostname-pid)")
 	concurrency := fs.Int("concurrency", 0, "parallel execution slots (overrides worker.concurrency)")
 	metricsAddr := fs.String("metrics-addr", "", "Prometheus listen address (overrides worker.metrics_addr)")
+	execMode := fs.String("exec-mode", "", "how a task consumes its duration: sleep (no CPU) or cpu (real computation)")
 	failRate := fs.Float64("fail-rate", -1, "probability a task reports an application error, within [0,1]")
 	failBeforeAck := fs.Float64("fail-before-ack-rate", -1, "probability a task is abandoned after execution and before acknowledgement, simulating a crash, within [0,1]")
 	redisWait := fs.Duration("redis-wait", 2*time.Minute, "how long to wait for Redis at startup before giving up; 0 fails immediately")
@@ -44,6 +45,9 @@ func main() {
 	}
 	if *concurrency > 0 {
 		cfg.Worker.Concurrency = *concurrency
+	}
+	if *execMode != "" {
+		cfg.Worker.ExecMode = *execMode
 	}
 	if *metricsAddr != "" {
 		cfg.Worker.MetricsAddr = *metricsAddr
