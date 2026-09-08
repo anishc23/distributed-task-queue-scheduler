@@ -800,7 +800,7 @@ an under-loaded run — not a scheduling insight.
 
 ## Measured results
 
-Three runs of the shipped `experiments/full.yaml` profile, 4000 tasks per
+Four runs of the shipped `experiments/full.yaml` profile, 4000 tasks per
 experiment:
 
 | run | scope | experiments | tasks |
@@ -808,15 +808,15 @@ experiment:
 | `full-5rep` | full matrix, 5 repetitions | 80 | 320,000 |
 | `heavy-25rep` | `heavy_tailed`, 25 repetitions | 100 | 400,000 |
 | `stable-25rep` | `bursty` + `multi_tenant`, 25 repetitions | 200 | 800,000 |
+| `uniform-25rep` | `uniform`, 25 repetitions | 100 | 400,000 |
 
-**380 experiments, 1.52 million tasks.** Every one completed every task. None
-timed out, none were dead-lettered, and maximum producer lag across all three
-runs was 36 ms, so the load generator was never the bottleneck.
+**480 experiments, 1.92 million tasks.** Every one completed every task. None
+timed out, none were dead-lettered, and maximum producer lag across all four
+runs was 87 ms, so the load generator was never the bottleneck.
 
-The table below reports 25 repetitions for `bursty`, `heavy_tailed` and
-`multi_tenant`, and 5 for `uniform`, which has not been re-run at the higher
-count. See [Repetitions matter](#repetitions-matter) for why the count varies
-and what it changes.
+The table below reports **25 repetitions for every cell**. See
+[Repetitions matter](#repetitions-matter) for what the repetition count changed
+and what it did not.
 
 ```bash
 make bench-full REPETITIONS=5 RUN=full-5rep
@@ -829,7 +829,11 @@ go run ./cmd/benchmark --config experiments/full.yaml \
   --workloads bursty,multi_tenant --repetitions 25 \
   --workers 4 --concurrency 4 --run-id stable-25rep
 
-make plots RUN=full-5rep && make plots RUN=heavy-25rep && make plots RUN=stable-25rep
+go run ./cmd/benchmark --config experiments/full.yaml \
+  --workloads uniform --repetitions 25 \
+  --workers 4 --concurrency 4 --run-id uniform-25rep
+
+make plots RUN=heavy-25rep && make plots RUN=stable-25rep && make plots RUN=uniform-25rep
 ```
 
 Environment: macOS 26.6 on an Apple M5 (10 cores), Redis 8.10.1 on localhost,
@@ -840,10 +844,10 @@ this machine under this configuration; do not port them elsewhere.**
 
 | workload | scheduler | p50 s | p99 s | max wait s | deadline miss | tasks/s | Jain | reps |
 | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| uniform | fifo | 1.505 | 2.946 | 2.927 | 0.794 | 308.1 | 0.999 | 5 |
-| uniform | priority | 0.148 | 4.562 | 4.559 | 0.463 | 307.6 | 0.999 | 5 |
-| uniform | edf | 1.496 | 3.012 | 3.099 | 0.792 | 307.8 | 0.999 | 5 |
-| uniform | wfq | 1.493 | 3.359 | 3.388 | 0.785 | 307.6 | 0.999 | 5 |
+| uniform | fifo | 1.486 | 2.917 | 2.900 | 0.791 | 308.8 | 0.999 | 25 |
+| uniform | priority | 0.109 | 4.491 | 4.492 | 0.462 | 308.3 | 0.999 | 25 |
+| uniform | edf | 1.483 | 2.992 | 3.069 | 0.788 | 308.3 | 0.999 | 25 |
+| uniform | wfq | 1.476 | 3.240 | 3.270 | 0.786 | 308.2 | 0.999 | 25 |
 | bursty | fifo | 3.216 | 6.245 | 6.273 | 0.943 | 308.9 | 0.999 | 25 |
 | bursty | priority | 1.705 | 7.538 | 7.561 | 0.704 | 308.1 | 0.999 | 25 |
 | bursty | edf | 3.158 | 6.306 | 6.389 | 0.937 | 308.1 | 0.999 | 25 |
@@ -876,15 +880,16 @@ mechanism explicit:
 
 | scheduler | prio 0 | prio 1 | prio 2 | prio 3 | prio 4 | spread |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| fifo | 2.827 | 2.833 | 2.805 | 2.844 | 2.818 | 1.0x |
-| **priority** | **4.477** | 0.079 | 0.074 | 0.073 | 0.073 | **61.5x** |
-| edf | 2.832 | 2.840 | 2.809 | 2.846 | 2.823 | 1.0x |
-| wfq | 3.009 | 2.991 | 3.002 | 3.018 | 3.063 | 1.0x |
+| fifo | 2.796 | 2.797 | 2.797 | 2.797 | 2.819 | 1.0x |
+| **priority** | **4.416** | 0.079 | 0.075 | 0.074 | 0.073 | **60.4x** |
+| edf | 2.816 | 2.813 | 2.809 | 2.811 | 2.834 | 1.0x |
+| wfq | 2.954 | 2.953 | 2.947 | 2.941 | 2.967 | 1.0x |
 
-p95 latency in seconds by priority level, `uniform`, 5 repetitions pooled.
+p95 latency in seconds by priority level, `uniform`, 25 repetitions pooled
+(100,000 tasks per scheduler).
 Priority 0 is the lowest; the weights `[50,25,15,7,3]` make it the largest
 population. Under strict priority, everything above priority 0 completes in
-~75 ms while priority 0 waits 4.5s — a **61.5x spread**. This is starvation,
+~75 ms while priority 0 waits 4.4s — a **60.4x spread**. This is starvation,
 measured. FIFO, EDF and WFQ show a flat 1.0x because none of them reads the
 priority field.
 
@@ -935,42 +940,59 @@ priority still buys anything, and only by sacrificing its low-priority tail.
 
 ### Repetitions matter
 
-How many repetitions a workload needs is not uniform across the matrix, and
-guessing wrong is expensive in one direction and merely wasteful in the other.
-Three workloads were re-run at 25 repetitions to find out, giving a direct
-5-vs-25 comparison on 72 workload/scheduler/metric combinations.
-
-The short version: **`bursty` and `multi_tenant` were already converged at 5
-repetitions; `heavy_tailed` was not, and its 5-repetition numbers were
-misleading in a way that was not visible from the 5-repetition data alone.**
+How many repetitions a workload needs varies across the matrix. All four
+workloads were re-run at 25 repetitions to find out, giving a direct 5-vs-25
+comparison on 96 workload/scheduler/metric combinations.
 
 | workload | metrics | 5-rep CIs excluding the 25-rep mean | median shift | max shift |
 | --- | ---: | ---: | ---: | ---: |
+| uniform | 24 | **8** | 0.60% | 26.2% |
 | bursty | 24 | 1 | 0.13% | 10.1% |
 | multi_tenant | 24 | 0 | 0.26% | 12.3% |
 | **heavy_tailed** | 24 | 1 | **8.42%** | **23.6%** |
 
-Note what does *not* separate these: the count of confidence intervals that
-missed. It is 1, 0 and 1 — no signal at all. Interval coverage is the wrong
-diagnostic here, because a metric with tiny variance produces a tiny interval
-that a trivial shift can escape. The **median shift in the point estimate** is
-what separates converged workloads from unconverged ones, by a factor of ~40.
+**The exclusion count is worse than useless as a convergence test, and
+`uniform` proves it.** `uniform` is the most stable workload in the matrix — its
+arrivals are deterministic, and half its metrics moved by 0.6% between 5 and 25
+repetitions. It also has by far the *most* confidence intervals that missed:
+8 of 24, against 1 for the genuinely unconverged `heavy_tailed`.
 
-For `bursty` and `multi_tenant`, half of all metrics moved by less than 0.3%
-going from 5 repetitions to 25. The single interval exclusion — priority's
-bursty miss rate, 0.707 → 0.704 — is a 0.4% shift flagged only because that
-metric is so stable its interval is extremely narrow. Statistically detectable,
-practically irrelevant. Five repetitions was the right call for these two.
+The reason is mechanical. A very stable metric produces a very narrow interval,
+so a 1% shift escapes it; a noisy metric produces a wide interval that almost
+nothing escapes. Interval coverage therefore measures how *stable* a metric is,
+not how *converged* the estimate is — close to the opposite of what you want.
+Every one of `uniform`'s eight exclusions is a shift of 3.6% or less.
 
-The max-shift column is entirely accounted for by one metric: strict priority's
-**p50** moved ~10% on both workloads (bursty 1.895 → 1.705, multi_tenant
-0.120 → 0.105) while everything else held to under 1%. Priority's median sits right at the boundary between the served
-high-priority population and the starved priority-0 population, so small changes
-in the mix move it disproportionately. If you care about priority's median
-specifically, sample it harder than the rest.
+**Use the median shift in the point estimate instead.** By that measure the
+ranking is unambiguous: `bursty` 0.13%, `multi_tenant` 0.26%, `uniform` 0.60%,
+`heavy_tailed` 8.42% — a factor of ~14 to ~65 between the converged workloads
+and the unconverged one.
 
-`heavy_tailed` is a different story, and the reason is structural: with Pareto
-durations a run's outcome turns on where the handful of 6-second tasks land.
+**One metric needs more repetitions on every workload.** Strict priority's p50
+moved 26.2% on `uniform`, 12.3% on `multi_tenant` and 10.1% on `bursty`, while
+essentially everything else on those three workloads held under 1%. Priority's
+median sits exactly at the boundary between the served high-priority population
+and the starved priority-0 population, so a small change in the mix moves it
+disproportionately. On all three converged workloads the max-shift column *is*
+this one metric; only on `heavy_tailed` is it something else (EDF's miss rate,
+23.6%), because there everything is moving. If you care about strict priority's
+median specifically, sample it harder regardless of workload.
+
+**A caveat on the comparison itself.** These are between-run comparisons: the
+5-repetition numbers come from one benchmark run and the 25-repetition numbers
+from later ones, so sampling variation is confounded with anything that differed
+between runs. The shifts do not all point the same way — `bursty` and
+`multi_tenant` moved slightly up on latency while `uniform` and `heavy_tailed`
+moved down — which argues against a systematic environmental drift, but does not
+rule one out. Within a single workload the four schedulers share seeds and run
+adjacently, so their shifts are correlated rather than independent. A cleaner
+design would interleave repetition counts inside one run; what is reported here
+is adequate for the coarse question of "is 5 enough" and should not be read as a
+precise measurement of sampling error.
+
+`heavy_tailed` is the one workload where the answer is clearly no, and the
+reason is structural: with Pareto durations a run's outcome turns on where the
+handful of 6-second tasks land.
 
 | metric | scheduler | 5 reps | 25 reps | shift | CI |
 | --- | --- | ---: | ---: | ---: | ---: |
@@ -1007,14 +1029,13 @@ rankings were robust at 5 repetitions. The magnitudes were not, and the
 throughput interval was actively misleading.
 
 **Practical guidance.** Scheduler *rankings* were robust at 5 repetitions on
-every workload tested — if you only need to know which policy wins, 5 is enough.
-For *magnitudes*, 5 repetitions is sufficient for `bursty` and `multi_tenant`
-and insufficient for `heavy_tailed`, which needs roughly 20–25. The distinguishing
+every workload — if you only need to know which policy wins, 5 is enough. For
+*magnitudes*, 5 is sufficient for `uniform`, `bursty` and `multi_tenant`, and
+insufficient for `heavy_tailed`, which needs roughly 20–25. The distinguishing
 property is the task-duration distribution, not the arrival pattern: bursty
-arrivals average out over 4000 tasks, but a heavy tail does not. `uniform` has
-not been re-run at 25; its variance profile resembles `bursty` and
-`multi_tenant`, so its 5-repetition numbers are probably fine, but that is an
-expectation rather than a measurement and is labelled as such in the table.
+arrivals and skewed tenants both average out over 4000 tasks, but a Pareto tail
+does not. Strict priority's p50 is the one metric that wants more repetitions
+everywhere.
 
 Charts for this run are in `results/full-5rep/plots/`. That directory is not
 committed; regenerate it with the command above.

@@ -145,24 +145,34 @@ Consequences for interpreting results:
   | --- | --- | ---: |
   | `bursty` | sufficient | 0.13% |
   | `multi_tenant` | sufficient | 0.26% |
+  | `uniform` | sufficient | 0.60% |
   | `heavy_tailed` | **not sufficient**, use 20–25 | 8.42% |
 
-  `uniform` has not been re-run at 25; its variance profile resembles `bursty`,
-  so 5 is probably fine, but that is an expectation rather than a measurement.
-
   The distinguishing property is the task-duration distribution, not the arrival
-  pattern: bursty arrivals average out over 4000 tasks, a Pareto tail does not.
+  pattern: bursty arrivals and skewed tenants both average out over 4000 tasks,
+  a Pareto tail does not. Strict priority's p50 is the one metric that wants
+  more repetitions on every workload, because its median sits at the boundary
+  between the served and starved priority populations.
   For `heavy_tailed`, 5-repetition estimates were biased in a consistent
   direction, one 95% interval (EDF throughput, 241.6 ± 4.4 tasks/s) excluded the
   better estimate of 257.6 entirely, and one qualitative conclusion flipped.
   Scheduler *rankings* were stable at 5 repetitions on every workload; magnitudes
   were not.
 
-  Do not use interval coverage to judge convergence. Across the three re-run
-  workloads the count of 5-repetition intervals that missed the 25-repetition
-  mean was 1, 0 and 1 — no signal — because a low-variance metric produces an
-  interval so narrow that a negligible shift escapes it. Compare the size of the
-  shift in the point estimate instead.
+  Do not use interval coverage to judge convergence; it measures how stable a
+  metric is, not how converged the estimate is. Across the four re-run workloads
+  the counts of 5-repetition intervals that missed the 25-repetition mean were
+  uniform 8, bursty 1, multi_tenant 0, heavy_tailed 1 — the *most* stable
+  workload scored worst and the genuinely unconverged one scored well, because a
+  low-variance metric produces an interval so narrow that a negligible shift
+  escapes it. Compare the size of the shift in the point estimate instead.
+
+  These are between-run comparisons, so sampling variation is confounded with
+  anything that differed between runs. Shift directions are not consistent across
+  workloads, which argues against systematic drift but does not exclude it, and
+  the four schedulers within a workload share seeds so their shifts are
+  correlated. Adequate for "is 5 enough"; not a precise estimate of sampling
+  error.
 - Check `producer_max_lag_s` in `aggregate.csv`. If it is a significant
   fraction of the observed latencies, the load generator, not the queue, was the
   bottleneck and the run should be repeated with a lower arrival rate or on a
