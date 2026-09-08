@@ -1,0 +1,100 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: taskqueue-config
+data:
+  # Mounted at /etc/taskqueue/config.yaml. Change the policy here and restart
+  # the scheduler to switch scheduling algorithms; producers and workers are
+  # unaffected.
+  config.yaml: |
+    redis:
+      addr: redis:6379
+      db: 0
+      dial_timeout: 5s
+      read_timeout: 3s
+      write_timeout: 3s
+      pool_size: 32
+
+    streams:
+      namespace: tq
+      ingress_stream: ingress
+      exec_stream: exec
+      results_stream: results
+      dead_letter_stream: dead
+      scheduler_group: schedulers
+      worker_group: workers
+      max_len: 0
+
+    scheduler:
+      policy: fifo
+      ingest_batch: 256
+      ingest_block: 200ms
+      dispatch_batch: 32
+      idle_sleep: 2ms
+      max_in_flight: 32
+      metrics_addr: ":9101"
+      tenant_weights:
+        A: 1
+        B: 1
+        C: 1
+        D: 1
+        E: 1
+      default_tenant_weight: 1
+      state_flush_interval: 1s
+
+    worker:
+      concurrency: 4
+      block: 500ms
+      metrics_addr: ":9102"
+      fail_before_ack_rate: 0.0
+      fail_rate: 0.0
+      shutdown_grace: 20s
+
+    recovery:
+      enabled: true
+      interval: 500ms
+      min_idle: 15s
+      batch: 128
+      max_retries: 3
+
+    workload:
+      type: uniform
+      seed: 42
+      count: 2000
+      id_prefix: k8s
+      arrival_rate_per_sec: 200
+      max_retries: 3
+      exec:
+        min_ms: 40
+        max_ms: 60
+      priority:
+        weights: [40, 25, 20, 10, 5]
+      deadline:
+        base_ms: 250
+        exec_multiplier: 3
+        jitter_ms: 250
+      tenants:
+        - {id: A, share: 0.2}
+        - {id: B, share: 0.2}
+        - {id: C, share: 0.2}
+        - {id: D, share: 0.2}
+        - {id: E, share: 0.2}
+      skew_tenants:
+        - {id: A, share: 0.90}
+        - {id: B, share: 0.03}
+        - {id: C, share: 0.03}
+        - {id: D, share: 0.02}
+        - {id: E, share: 0.02}
+      burst:
+        base_rate_per_sec: 100
+        burst_rate_per_sec: 1000
+        burst_duration: 500ms
+        burst_period: 2s
+      heavy_tail:
+        min_ms: 15
+        max_ms: 4000
+        alpha: 1.3
+
+    log:
+      level: info
+      format: json

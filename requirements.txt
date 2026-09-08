@@ -1,0 +1,5 @@
+# Analysis and plotting dependencies for scripts/plot_results.py.
+# Install with: make python-deps
+pandas>=2.0
+matplotlib>=3.7
+seaborn>=0.13

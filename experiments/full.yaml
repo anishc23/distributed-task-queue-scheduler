@@ -1,0 +1,67 @@
+# Full experiment profile: longer runs with a deeper backlog, intended for
+# results that are actually reportable.
+#
+#   make bench RUN_CONFIG=experiments/full.yaml REPETITIONS=5
+#
+# Expect roughly 10-25 minutes for the whole 16-cell matrix at 3 repetitions on
+# a laptop, dominated by the heavy-tailed cells.
+
+redis:
+  addr: localhost:6379
+  pool_size: 64
+
+streams:
+  namespace: tq-full
+
+scheduler:
+  policy: fifo
+  ingest_batch: 512
+  ingest_block: 200ms
+  dispatch_batch: 64
+  idle_sleep: 2ms
+  max_in_flight: 16
+  metrics_addr: ""
+
+worker:
+  concurrency: 8
+  metrics_addr: ""
+
+recovery:
+  enabled: true
+  interval: 500ms
+  min_idle: 10s
+  batch: 256
+  max_retries: 3
+
+workload:
+  type: uniform
+  seed: 20240501
+  count: 4000
+  id_prefix: full
+  # 16 slots at a 50ms mean duration serve about 320 tasks/s. Arriving at 400/s
+  # drives a sustained overload of roughly 1.25x, which is the regime where
+  # scheduling policy actually matters.
+  arrival_rate_per_sec: 400
+  max_retries: 3
+  exec:
+    min_ms: 30
+    max_ms: 70
+  priority:
+    weights: [50, 25, 15, 7, 3]
+  deadline:
+    base_ms: 300
+    exec_multiplier: 4
+    jitter_ms: 300
+  burst:
+    base_rate_per_sec: 200
+    burst_rate_per_sec: 2000
+    burst_duration: 500ms
+    burst_period: 3s
+  heavy_tail:
+    min_ms: 10
+    max_ms: 6000
+    alpha: 1.2
+
+log:
+  level: info
+  format: text

@@ -1,0 +1,116 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: worker
+  labels:
+    app.kubernetes.io/name: worker
+    app.kubernetes.io/part-of: taskqueue
+spec:
+  # Headless so Prometheus can discover every worker pod individually.
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: worker
+  ports:
+    - name: metrics
+      port: 9102
+      targetPort: metrics
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  labels:
+    app.kubernetes.io/name: worker
+    app.kubernetes.io/part-of: taskqueue
+spec:
+  # Workers are stateless consumers of one Redis Streams consumer group, so they
+  # scale horizontally without coordination:
+  #   kubectl -n taskqueue scale deployment/worker --replicas=6
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: worker
+        app.kubernetes.io/part-of: taskqueue
+    spec:
+      # Long enough for shutdown_grace (20s) so in-flight tasks can finish and
+      # acknowledge instead of being redelivered.
+      terminationGracePeriodSeconds: 40
+      containers:
+        - name: worker
+          image: distributed-task-queue:dev
+          imagePullPolicy: IfNotPresent
+          command: ["worker"]
+          args:
+            - --config=/etc/taskqueue/config.yaml
+            - --metrics-addr=:9102
+          env:
+            - name: TQ_LOG_FORMAT
+              value: json
+            # A stable per-pod consumer name keeps the Redis pending entries
+            # list interpretable across restarts.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          ports:
+            - name: metrics
+              containerPort: 9102
+          volumeMounts:
+            - name: config
+              mountPath: /etc/taskqueue
+              readOnly: true
+          resources:
+            requests:
+              cpu: 250m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            initialDelaySeconds: 2
+            periodSeconds: 5
+      volumes:
+        - name: config
+          configMap:
+            name: taskqueue-config
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: worker
+  labels:
+    app.kubernetes.io/name: worker
+    app.kubernetes.io/part-of: taskqueue
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: worker
+  minReplicas: 2
+  maxReplicas: 10
+  # CPU-based scaling needs metrics-server, which a bare kind cluster does not
+  # install. Without it the HPA reports "unknown" and simply leaves the
+  # deployment at its current replica count; manual scaling still works.
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 120

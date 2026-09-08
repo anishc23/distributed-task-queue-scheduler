@@ -1,0 +1,115 @@
+# Local development stack: Redis, one scheduler, two workers, a producer that
+# submits a finite workload, and Prometheus scraping everything.
+#
+#   make up          # start Redis, scheduler, workers, Prometheus
+#   make submit      # run the producer once against the running stack
+#   make down        # stop everything and remove volumes
+#
+# The scheduling policy is chosen entirely through configuration or flags:
+#   SCHEDULER_POLICY=wfq make up
+
+name: distributed-task-queue
+
+x-taskqueue-image: &taskqueue-image
+  build:
+    context: .
+    dockerfile: deploy/docker/Dockerfile
+  image: distributed-task-queue:dev
+  environment:
+    TQ_CONFIG: /etc/taskqueue/docker.yaml
+    TQ_REDIS_ADDR: redis:6379
+    TQ_LOG_FORMAT: json
+  depends_on:
+    redis:
+      condition: service_healthy
+
+services:
+  redis:
+    image: redis:7-alpine
+    # appendonly keeps the queue durable across a container restart, which is
+    # what makes the "scheduler restart resumes safely" behaviour observable.
+    command: ["redis-server", "--appendonly", "yes"]
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+      start_period: 2s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  scheduler:
+    <<: *taskqueue-image
+    command:
+      - scheduler
+      - --policy=${SCHEDULER_POLICY:-fifo}
+      - --metrics-addr=:9101
+    ports:
+      - "9101:9101"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:9101/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  worker:
+    <<: *taskqueue-image
+    command:
+      - worker
+      - --concurrency=${WORKER_CONCURRENCY:-4}
+      - --metrics-addr=:9102
+    # Scale horizontally with:  docker compose up -d --scale worker=6
+    deploy:
+      replicas: ${WORKER_REPLICAS:-2}
+      resources:
+        limits:
+          memory: 512M
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:9102/readyz"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  # Run on demand:  docker compose run --rm producer
+  producer:
+    <<: *taskqueue-image
+    command:
+      - producer
+      - --workload=${WORKLOAD:-uniform}
+      - --count=${TASK_COUNT:-500}
+    profiles: ["tools"]
+    restart: "no"
+
+  prometheus:
+    image: prom/prometheus:v2.54.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=2h
+      - --web.enable-lifecycle
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./deploy/docker/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    depends_on:
+      - scheduler
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+volumes:
+  redis-data:
+  prometheus-data:

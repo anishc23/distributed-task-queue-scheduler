@@ -1,0 +1,47 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: producer
+  labels:
+    app.kubernetes.io/name: producer
+    app.kubernetes.io/part-of: taskqueue
+spec:
+  backoffLimit: 2
+  # The workload is finite and reproducible, so the job terminates on its own.
+  # Re-run it with:
+  #   kubectl -n taskqueue delete job producer --ignore-not-found
+  #   kubectl -n taskqueue apply -f deploy/kubernetes/base/producer-job.yaml
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: producer
+        app.kubernetes.io/part-of: taskqueue
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: producer
+          image: distributed-task-queue:dev
+          imagePullPolicy: IfNotPresent
+          command: ["producer"]
+          args:
+            - --config=/etc/taskqueue/config.yaml
+            - --workload=multi_tenant
+            - --count=2000
+          env:
+            - name: TQ_LOG_FORMAT
+              value: json
+          volumeMounts:
+            - name: config
+              mountPath: /etc/taskqueue
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+      volumes:
+        - name: config
+          configMap:
+            name: taskqueue-config

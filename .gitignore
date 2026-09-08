@@ -1,0 +1,33 @@
+# Build artefacts
+/bin/
+*.exe
+*.test
+coverage.out
+coverage.html
+
+# Generated benchmark output. Result directories are reproducible from the
+# committed configuration and seed, so they are not committed. The tiny example
+# run under results/example/ is committed deliberately and is re-added below.
+/results/*
+!/results/.gitkeep
+!/results/README.md
+!/results/example/
+!/results/example/**
+
+# Python analysis environment
+.venv/
+venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local overrides
+*.local.yaml
+.env

@@ -1,0 +1,118 @@
+# Default configuration: a short local experiment that runs end to end on a
+# laptop with a single Redis instance.
+#
+# Every duration is a Go duration string with explicit units ("250ms", "2s",
+# "1m30s"). Every field named *_ms is an integer count of milliseconds.
+
+redis:
+  addr: localhost:6379
+  password: ""
+  db: 0
+  dial_timeout: 5s
+  read_timeout: 3s
+  write_timeout: 3s
+  pool_size: 32
+
+streams:
+  # Every Redis key is prefixed with this namespace, so independent runs can
+  # share one Redis server without mixing state.
+  namespace: tq
+  ingress_stream: ingress
+  exec_stream: exec
+  results_stream: results
+  dead_letter_stream: dead
+  scheduler_group: schedulers
+  worker_group: workers
+  # 0 disables stream trimming, which is what experiments want so no record is
+  # ever discarded. Set a positive value for long-running deployments.
+  max_len: 0
+
+scheduler:
+  # fifo | priority | edf | wfq
+  policy: fifo
+  ingest_batch: 256
+  ingest_block: 200ms
+  dispatch_batch: 32
+  # Back-off when there is nothing to dispatch; prevents a busy loop.
+  idle_sleep: 2ms
+  # Cap on tasks dispatched but not yet terminal. Keeping this close to the
+  # total worker slot count is what keeps the scheduler, rather than the
+  # execution stream, in control of ordering. 0 means unlimited.
+  max_in_flight: 64
+  metrics_addr: ":9101"
+  # Relative WFQ weights per tenant. Ignored by the other policies.
+  tenant_weights:
+    A: 1
+    B: 1
+    C: 1
+    D: 1
+    E: 1
+  default_tenant_weight: 1
+  state_flush_interval: 1s
+
+worker:
+  name: ""            # empty derives hostname-pid
+  concurrency: 4
+  block: 500ms
+  metrics_addr: ":9102"
+  # Failure injection for testing the recovery path. Both are probabilities.
+  fail_before_ack_rate: 0.0   # abandon after executing, before acknowledging
+  fail_rate: 0.0              # report an application error
+  fail_seed: 0                # 0 derives a seed from the worker name
+  shutdown_grace: 15s
+
+recovery:
+  enabled: true
+  interval: 500ms
+  # Visibility timeout: how long a delivered-but-unacknowledged entry may sit
+  # in the consumer group before it is reclaimed and retried.
+  min_idle: 10s
+  batch: 128
+  # Retry budget applied to tasks whose payload carries max_retries: 0.
+  max_retries: 3
+
+workload:
+  type: uniform            # uniform | bursty | heavy_tailed | multi_tenant
+  seed: 42
+  count: 500
+  id_prefix: task
+  arrival_rate_per_sec: 120
+  max_retries: 3
+  exec:
+    min_ms: 40
+    max_ms: 60
+  priority:
+    # Index i is the relative frequency of priority i; higher is more important.
+    weights: [40, 25, 20, 10, 5]
+  deadline:
+    # deadline = submitted_at + base_ms + exec_ms*exec_multiplier + U(0, jitter_ms)
+    base_ms: 250
+    exec_multiplier: 3
+    jitter_ms: 250
+  tenants:
+    - {id: A, share: 0.2}
+    - {id: B, share: 0.2}
+    - {id: C, share: 0.2}
+    - {id: D, share: 0.2}
+    - {id: E, share: 0.2}
+  # Used instead of `tenants` when type is multi_tenant.
+  skew_tenants:
+    - {id: A, share: 0.90}
+    - {id: B, share: 0.03}
+    - {id: C, share: 0.03}
+    - {id: D, share: 0.02}
+    - {id: E, share: 0.02}
+  burst:
+    base_rate_per_sec: 60
+    burst_rate_per_sec: 600
+    burst_duration: 500ms
+    burst_period: 2s
+  heavy_tail:
+    # exec_ms = min_ms * U^(-1/alpha), clamped to max_ms.
+    min_ms: 15
+    max_ms: 4000
+    alpha: 1.3
+
+log:
+  level: info
+  format: text

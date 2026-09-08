@@ -1,0 +1,39 @@
+# Prometheus configuration for the Docker Compose stack.
+#
+# The scheduler is a single instance on a fixed name. Workers are scaled with
+# `docker compose up -d --scale worker=N`, so they are discovered through
+# Docker's DNS: querying the service name returns one A record per replica and
+# Prometheus creates a target for each.
+
+global:
+  scrape_interval: 5s
+  evaluation_interval: 15s
+  external_labels:
+    stack: distributed-task-queue
+
+scrape_configs:
+  - job_name: scheduler
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["scheduler:9101"]
+        labels:
+          component: scheduler
+
+  - job_name: worker
+    metrics_path: /metrics
+    # dns_sd resolves every worker replica, so scaling workers up or down needs
+    # no Prometheus reload.
+    dns_sd_configs:
+      - names: ["worker"]
+        type: A
+        port: 9102
+        refresh_interval: 10s
+    relabel_configs:
+      - source_labels: [__meta_dns_name]
+        target_label: worker_service
+      - target_label: component
+        replacement: worker
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

@@ -1,0 +1,27 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: taskqueue
+
+# Applied to metadata only; selectors are declared explicitly in each manifest
+# so that relabelling can never orphan a running pod.
+labels:
+  - includeSelectors: false
+    pairs:
+      app.kubernetes.io/managed-by: kustomize
+
+resources:
+  - namespace.yaml
+  - configmap.yaml
+  - redis.yaml
+  - scheduler.yaml
+  - worker.yaml
+  - prometheus.yaml
+  # The producer job is deliberately not applied by default: applying it on
+  # every `kubectl apply` would fail because a completed Job's pod template is
+  # immutable. Run it explicitly with `make kind-submit`.
+
+images:
+  - name: distributed-task-queue
+    newName: distributed-task-queue
+    newTag: dev

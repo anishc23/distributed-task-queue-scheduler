@@ -1,0 +1,50 @@
+# Failure-injection profile: exercises the recovery, retry and dead-letter paths
+# under load.
+#
+#   make bench-failure
+#
+# Workers abandon 20% of attempts after executing and before acknowledging,
+# which is exactly the crash scenario that makes duplicate execution possible.
+# Every task should still reach a terminal state, and the idempotency guard must
+# keep each task's result recorded exactly once.
+
+redis:
+  addr: localhost:6379
+
+streams:
+  namespace: tq-failure
+
+scheduler:
+  policy: fifo
+  max_in_flight: 8
+  metrics_addr: ""
+
+worker:
+  concurrency: 4
+  metrics_addr: ""
+  fail_before_ack_rate: 0.20
+  fail_rate: 0.05
+
+recovery:
+  enabled: true
+  interval: 200ms
+  # Short visibility timeout so the experiment finishes quickly. Production
+  # deployments should use a value comfortably above the longest task.
+  min_idle: 2s
+  batch: 128
+  max_retries: 5
+
+workload:
+  type: uniform
+  seed: 7
+  count: 300
+  id_prefix: fail
+  arrival_rate_per_sec: 150
+  max_retries: 5
+  exec:
+    min_ms: 20
+    max_ms: 40
+
+log:
+  level: info
+  format: text

@@ -1,0 +1,58 @@
+# Quick experiment profile: a full 16-cell matrix that finishes in a couple of
+# minutes on a laptop. Use this to check the pipeline before committing to the
+# full profile.
+#
+#   make bench-quick
+#
+# Only the fields that differ from configs/default.yaml need to appear here.
+
+redis:
+  addr: localhost:6379
+
+streams:
+  namespace: tq-quick
+
+scheduler:
+  policy: fifo
+  dispatch_batch: 32
+  idle_sleep: 2ms
+  max_in_flight: 8
+  metrics_addr: ""
+
+worker:
+  concurrency: 4
+  metrics_addr: ""
+
+recovery:
+  enabled: true
+  interval: 250ms
+  min_idle: 5s
+  batch: 128
+  max_retries: 3
+
+workload:
+  type: uniform
+  seed: 1000
+  count: 300
+  id_prefix: quick
+  # Arrival rate is set slightly above the service capacity of 8 slots at a
+  # 50ms mean duration (160 tasks/s) so that a queue actually forms; without a
+  # backlog every scheduler behaves identically.
+  arrival_rate_per_sec: 200
+  max_retries: 3
+  exec:
+    min_ms: 40
+    max_ms: 60
+  heavy_tail:
+    min_ms: 10
+    max_ms: 1500
+    alpha: 1.3
+  burst:
+    base_rate_per_sec: 80
+    burst_rate_per_sec: 800
+    burst_duration: 400ms
+    burst_period: 1500ms
+
+log:
+  level: info
+  format: text

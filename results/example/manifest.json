@@ -1,0 +1,1495 @@
+{
+  "run_id": "example",
+  "started_at": "2026-09-08T09:26:27.588719Z",
+  "finished_at": "2026-09-08T09:26:52.52799Z",
+  "schedulers": [
+    "edf",
+    "fifo",
+    "priority",
+    "wfq"
+  ],
+  "workloads": [
+    "uniform",
+    "bursty",
+    "heavy_tailed",
+    "multi_tenant"
+  ],
+  "repetitions": 1,
+  "base_seed": 1000,
+  "tasks_per_run": 150,
+  "worker_processes": 2,
+  "worker_concurrency": 4,
+  "max_in_flight": 8,
+  "redis_addr": "localhost:6379",
+  "config": {
+    "Redis": {
+      "Addr": "localhost:6379",
+      "Password": "",
+      "DB": 0,
+      "DialTimeout": 5000000000,
+      "ReadTimeout": 3000000000,
+      "WriteTimeout": 3000000000,
+      "PoolSize": 32
+    },
+    "Streams": {
+      "Namespace": "tq-quick",
+      "IngressStream": "ingress",
+      "ExecStream": "exec",
+      "ResultsStream": "results",
+      "DeadLetterStream": "dead",
+      "SchedulerGroup": "schedulers",
+      "WorkerGroup": "workers",
+      "MaxLen": 0
+    },
+    "Scheduler": {
+      "Policy": "fifo",
+      "IngestBatch": 256,
+      "IngestBlock": 200000000,
+      "DispatchBatch": 32,
+      "IdleSleep": 2000000,
+      "MaxInFlight": 8,
+      "MetricsAddr": ":9101",
+      "TenantWeights": {
+        "A": 1,
+        "B": 1,
+        "C": 1,
+        "D": 1,
+        "E": 1
+      },
+      "DefaultTenantWeight": 1,
+      "StateFlushInterval": 1000000000
+    },
+    "Worker": {
+      "Name": "",
+      "Concurrency": 4,
+      "Block": 500000000,
+      "MetricsAddr": ":9102",
+      "FailBeforeAckRate": 0,
+      "FailRate": 0,
+      "FailSeed": 0,
+      "ShutdownGrace": 15000000000
+    },
+    "Recovery": {
+      "Enabled": true,
+      "Interval": 250000000,
+      "MinIdle": 5000000000,
+      "Batch": 128,
+      "MaxRetries": 3
+    },
+    "Workload": {
+      "Type": "uniform",
+      "Seed": 1000,
+      "Count": 150,
+      "IDPrefix": "quick",
+      "ArrivalRatePerSec": 200,
+      "MaxRetries": 3,
+      "Exec": {
+        "MinMillis": 40,
+        "MaxMillis": 60
+      },
+      "Priority": {
+        "Weights": [
+          40,
+          25,
+          20,
+          10,
+          5
+        ]
+      },
+      "Deadline": {
+        "BaseMillis": 250,
+        "ExecMultiplier": 3,
+        "JitterMillis": 250
+      },
+      "Tenants": [
+        {
+          "ID": "A",
+          "Share": 0.2
+        },
+        {
+          "ID": "B",
+          "Share": 0.2
+        },
+        {
+          "ID": "C",
+          "Share": 0.2
+        },
+        {
+          "ID": "D",
+          "Share": 0.2
+        },
+        {
+          "ID": "E",
+          "Share": 0.2
+        }
+      ],
+      "SkewTenants": [
+        {
+          "ID": "A",
+          "Share": 0.9
+        },
+        {
+          "ID": "B",
+          "Share": 0.03
+        },
+        {
+          "ID": "C",
+          "Share": 0.03
+        },
+        {
+          "ID": "D",
+          "Share": 0.02
+        },
+        {
+          "ID": "E",
+          "Share": 0.02
+        }
+      ],
+      "Burst": {
+        "BaseRatePerSec": 80,
+        "BurstRatePerSec": 800,
+        "BurstDuration": 400000000,
+        "BurstPeriod": 1500000000
+      },
+      "HeavyTail": {
+        "MinMillis": 10,
+        "MaxMillis": 1500,
+        "Alpha": 1.3
+      }
+    },
+    "Log": {
+      "Level": "warn",
+      "Format": "text"
+    }
+  },
+  "experiments": [
+    {
+      "identity": {
+        "run_id": "example",
+        "scheduler": "edf",
+        "workload": "uniform",
+        "repetition": 0,
+        "seed": 1000
+      },
+      "timestamp": "2026-09-08T09:26:29.176667Z",
+      "tasks_planned": 150,
+      "tasks_submitted": 150,
+      "tasks_completed": 150,
+      "tasks_dead_lettered": 0,
+      "tasks_retried": 0,
+      "task_failures": 0,
+      "duplicate_completions": 0,
+      "timed_out": false,
+      "worker_processes": 2,
+      "worker_concurrency": 4,
+      "total_slots": 8,
+      "max_in_flight": 8,
+      "experiment_duration": 1046815250,
+      "makespan": 1016707000,
+      "throughput_tasks_per_s": 147.53513057350838,
+      "latency_seconds": {
+        "Count": 150,
+        "Mean": 0.1590247333333334,
+        "P50": 0.14036349999999997,
+        "P95": 0.3308753499999999,
+        "P99": 0.35313942,
+        "Max": 0.364977
+      },
+      "queue_wait_seconds": {
+        "Count": 150,
+        "Mean": 0.10858861333333332,
+        "P50": 0.0833555,
+        "P95": 0.2793628999999999,
+        "P99": 0.30291947999999996,
+        "Max": 0.308924
+      },
+      "exec_seconds": {
+        "Count": 150,
+        "Mean": 0.05033333333333331,
+        "P50": 0.051,
+        "P95": 0.06,
+        "P99": 0.06,
+        "Max": 0.06
+      },
+      "deadline_missed": 0,
+      "deadline_miss_rate": 0,
+      "worker_busy_seconds": 7.56541163,
+      "worker_slot_seconds": 8.374522,
+      "worker_utilization": 0.9033842922616956,
+      "jain_fairness_service": 0.9872788635636989,
+      "jain_fairness_count": 0.985977212971078,
+      "tenant_count": 5,
+      "tenant_service_seconds": {
+        "A": 1.5040000000000004,
+        "B": 1.68,
+        "C": 1.724,
+        "D": 1.3400000000000003,
+        "E": 1.3020000000000005
+      },
+      "tenant_completed_tasks": {
+        "A": 30,
+        "B": 34,
+        "C": 34,
+        "D": 26,
+        "E": 26
+      },
+      "tenant_spread": {
+        "max_p99_seconds": 0.35905317,
+        "min_p99_seconds": 0.30500198,
+        "p99_ratio": 1.177215865942903,
+        "min_service_share": 0.17245033112582783,
+        "max_wait_any_tenant_seconds": 0.308924
+      },
+      "producer_max_lag": 1103750,
+      "producer_mean_lag": 470086,
+      "arrival_rate_per_sec": 200,
+      "exec_min_ms": 40,
+      "exec_max_ms": 60
+    },
+    {
+      "identity": {
+        "run_id": "example",
+        "scheduler": "edf",
+        "workload": "bursty",
+        "repetition": 0,
+        "seed": 1000
+      },
+      "timestamp": "2026-09-08T09:26:30.784701Z",
+      "tasks_planned": 150,
+      "tasks_submitted": 150,
+      "tasks_completed": 150,
+      "tasks_dead_lettered": 0,
+      "tasks_retried": 0,
+      "task_failures": 0,
+      "duplicate_completions": 0,
+      "timed_out": false,
+      "worker_processes": 2,
+      "worker_concurrency": 4,
+      "total_slots": 8,
+      "max_in_flight": 8,
+      "experiment_duration": 1092396292,
+      "makespan": 1010608000,
+      "throughput_tasks_per_s": 148.4255022718997,
+      "latency_seconds": {
+        "Count": 150,
+        "Mean": 0.4245772599999998,
+        "P50": 0.4123615,
+        "P95": 0.8074244,
+        "P99": 0.82171827,
+        "Max": 0.847366
+      },
+      "queue_wait_seconds": {
+        "Count": 150,
+        "Mean": 0.3743340733333333,
+        "P50": 0.365769,
+        "P95": 0.7531089,
+        "P99": 0.76743976,
+        "Max": 0.789299
+      },
+      "exec_seconds": {
+        "Count": 150,
+        "Mean": 0.050120000000000026,
+        "P50": 0.0495,
+        "P95": 0.059,
+        "P99": 0.06,
+        "Max": 0.06
+      },
+      "deadline_missed": 51,
+      "deadline_miss_rate": 0.34,
+      "worker_busy_seconds": 7.536468784,
+      "worker_slot_seconds": 8.739170336,
+      "worker_utilization": 0.8623780627040063,
+      "jain_fairness_service": 0.9712395485377273,
+      "jain_fairness_count": 0.9752925877763329,
+      "tenant_count": 5,
+      "tenant_service_seconds": {
+        "A": 1.92,
+        "B": 1.4560000000000004,
+        "C": 1.5440000000000005,
+        "D": 1.1070000000000002,
+        "E": 1.491
+      },
+      "tenant_completed_tasks": {
+        "A": 38,
+        "B": 30,
+        "C": 30,
+        "D": 23,
+        "E": 29
+      },
+      "tenant_spread": {
+        "max_p99_seconds": 0.8410321199999999,
+        "min_p99_seconds": 0.79676012,
+        "p99_ratio": 1.0555650300368948,
+        "min_service_share": 0.1472466081404629,
+        "max_wait_any_tenant_seconds": 0.789299
+      },
+      "producer_max_lag": 459951,
+      "producer_mean_lag": 221756,
+      "arrival_rate_per_sec": 200,
+      "exec_min_ms": 40,
+      "exec_max_ms": 60
+    },
+    {
+      "identity": {
+        "run_id": "example",
+        "scheduler": "edf",
+        "workload": "heavy_tailed",
+        "repetition": 0,
+        "seed": 1000
+      },
+      "timestamp": "2026-09-08T09:26:32.192126Z",
+      "tasks_planned": 150,
+      "tasks_submitted": 150,
+      "tasks_completed": 150,
+      "tasks_dead_lettered": 0,
+      "tasks_retried": 0,
+      "task_failures": 0,
+      "duplicate_completions": 0,
+      "timed_out": false,
+      "worker_processes": 2,
+      "worker_concurrency": 4,
+      "total_slots": 8,
+      "max_in_flight": 8,
+      "experiment_duration": 866007333,
+      "makespan": 824658000,
+      "throughput_tasks_per_s": 181.89358497704504,
+      "latency_seconds": {
+        "Count": 150,
+        "Mean": 0.025875786666666678,
+        "P50": 0.017796,
+        "P95": 0.06832364999999994,
+        "P99": 0.09269682999999997,
+        "Max": 0.141641
+      },
+      "queue_wait_seconds": {
+        "Count": 150,
+        "Mean": 0.0027489266666666664,
+        "P50": 0.0027205,
+        "P95": 0.004452049999999998,
+        "P99": 0.00795134,
+        "Max": 0.013097
+      },
+      "exec_seconds": {
+        "Count": 150,
+        "Mean": 0.023033333333333312,
+        "P50": 0.015,
+        "P95": 0.06494999999999994,
+        "P99": 0.09023999999999996,
+        "Max": 0.14
+      },
+      "deadline_missed": 0,
+      "deadline_miss_rate": 0,
+      "worker_busy_seconds": 3.46902067,
+      "worker_slot_seconds": 6.928058664,
+      "worker_utilization": 0.5007204526176916,
+      "jain_fairness_service": 0.9775204345727216,
+      "jain_fairness_count": 0.9752925877763329,
+      "tenant_count": 5,
+      "tenant_service_seconds": {
+        "A": 0.8150000000000003,
+        "B": 0.8040000000000003,
+        "C": 0.6850000000000002,
+        "D": 0.5710000000000002,
+        "E": 0.5800000000000002
+      },
+      "tenant_completed_tasks": {
+        "A": 38,
+        "B": 30,
+        "C": 30,
+        "D": 23,
+        "E": 29
+      },
+      "tenant_spread": {
+        "max_p99_seconds": 0.12166434999999998,
+        "min_p99_seconds": 0.07198104,
+        "p99_ratio": 1.6902277321916992,
+        "min_service_share": 0.16526772793053546,
+        "max_wait_any_tenant_seconds": 0.013097
+      },
+      "producer_max_lag": 901265,
+      "producer_mean_lag": 479357,
+      "arrival_rate_per_sec": 200,
+      "exec_min_ms": 40,
+      "exec_max_ms": 60
+    },
+    {
+      "identity": {
+        "run_id": "example",
+        "scheduler": "edf",
+        "workload": "multi_tenant",
+        "repetition": 0,
+        "seed": 1000
+      },
+      "timestamp": "2026-09-08T09:26:33.802662Z",
+      "tasks_planned": 150,
+      "tasks_submitted": 150,
+      "tasks_completed": 150,
+      "tasks_dead_lettered": 0,
+      "tasks_retried": 0,
+      "task_failures": 0,
+      "duplicate_completions": 0,
+      "timed_out": false,
+      "worker_processes": 2,
+      "worker_concurrency": 4,
+      "total_slots": 8,
+      "max_in_flight": 8,
+      "experiment_duration": 1065649416,
+      "makespan": 1030285000,
+      "throughput_tasks_per_s": 145.59078313282248,
+      "latency_seconds": {
+        "Count": 150,
+        "Mean": 0.1738174466666666,
+        "P50": 0.165505,
+        "P95": 0.3266027999999999,
+        "P99": 0.37531927,
+        "Max": 0.381803
+      },
+      "queue_wait_seconds": {
+        "Count": 150,
+        "Mean": 0.12362992666666668,
+        "P50": 0.1213,
+        "P95": 0.27969954999999996,
+        "P99": 0.31627087,
+        "Max": 0.322725
+      },
+      "exec_seconds": {
+        "Count": 150,
+        "Mean": 0.05008000000000002,
+        "P50": 0.0495,
+        "P95": 0.059,
+        "P99": 0.06,
+        "Max": 0.06
+      },
+      "deadline_missed": 0,
+      "deadline_miss_rate": 0,
+      "worker_busy_seconds": 7.528111459,
+      "worker_slot_seconds": 8.525195328,
+      "worker_utilization": 0.8830426951362398,
+      "jain_fairness_service": 0.2469825315561724,
+      "jain_fairness_count": 0.2461437479488021,
+      "tenant_count": 5,
+      "tenant_service_seconds": {
+        "A": 6.749000000000002,
+        "B": 0.16599999999999998,
+        "C": 0.213,
+        "D": 0.193,
+        "E": 0.191
+      },
+      "tenant_completed_tasks": {
+        "A": 135,
+        "B": 3,
+        "C": 4,
+        "D": 4,
+        "E": 4
+      },
+      "tenant_spread": {
+        "max_p99_seconds": 0.37695082,
+        "min_p99_seconds": 0.20512393999999998,
+        "p99_ratio": 1.8376734573253617,
+        "min_service_share": 0.02209797657082001,
+        "max_wait_any_tenant_seconds": 0.322725
+      },
+      "producer_max_lag": 973920,
+      "producer_mean_lag": 466991,
+      "arrival_rate_per_sec": 200,
+      "exec_min_ms": 40,
+      "exec_max_ms": 60
+    },
+    {
+      "identity": {
+        "run_id": "example",
+        "scheduler": "fifo",
+        "workload": "uniform",
+        "repetition": 0,
+        "seed": 1000
+      },
+      "timestamp": "2026-09-08T09:26:35.414466Z",
+      "tasks_planned": 150,
+      "tasks_submitted": 150,
+      "tasks_completed": 150,
+      "tasks_dead_lettered": 0,
+      "tasks_retried": 0,
+      "task_failures": 0,
+      "duplicate_completions": 0,
+      "timed_out": false,
+      "worker_processes": 2,
+      "worker_concurrency": 4,
+      "total_slots": 8,
+      "max_in_flight": 8,
+      "experiment_duration": 1046832833,
+      "makespan": 1019295000,
+      "throughput_tasks_per_s": 147.1605374302827,
+      "latency_seconds": {
+        "Count": 150,
+        "Mean": 0.16205293333333337,
+        "P50": 0.16160200000000002,
+        "P95": 0.26439995,
+        "P99": 0.2790301,
+        "Max": 0.283801
+      },
+      "queue_wait_seconds": {
+        "Count": 150,
+        "Mean": 0.11160749999999996,
+        "P50": 0.11196249999999999,
+        "P95": 0.2139717,
+        "P99": 0.22692608,
+        "Max": 0.227993
+      },
+      "exec_seconds": {
+        "Count": 150,
+        "Mean": 0.05033333333333332,
+        "P50": 0.051,
+        "P95": 0.06,
+        "P99": 0.06,
+        "Max": 0.06
+      },
+      "deadline_missed": 0,
+      "deadline_miss_rate": 0,
+      "worker_busy_seconds": 7.566804418,
+      "worker_slot_seconds": 8.374662664,
+      "worker_utilization": 0.903535428421168,
+      "jain_fairness_service": 0.9872788635636989,
+      "jain_fairness_count": 0.985977212971078,
+      "tenant_count": 5,
+      "tenant_service_seconds": {
+        "A": 1.5040000000000004,
+        "B": 1.6799999999999997,
+        "C": 1.7239999999999998,
+        "D": 1.3400000000000005,
+        "E": 1.3020000000000003
+      },
+      "tenant_completed_tasks": {
+        "A": 30,
+        "B": 34,
+        "C": 34,
+        "D": 26,
+        "E": 26
+      },
+      "tenant_spread": {
+        "max_p99_seconds": 0.27862725,
+        "min_p99_seconds": 0.24603606,
+        "p99_ratio": 1.132465094750745,
+        "min_service_share": 0.17245033112582783,
+        "max_wait_any_tenant_seconds": 0.227993
+      },
+      "producer_max_lag": 961541,
+      "producer_mean_lag": 494049,
+      "arrival_rate_per_sec": 200,
+      "exec_min_ms": 40,
+      "exec_max_ms": 60
+    },
+    {
+      "identity": {
+        "run_id": "example",
+        "scheduler": "fifo",
+        "workload": "bursty",
+        "repetition": 0,
+        "seed": 1000
+      },
+      "timestamp": "2026-09-08T09:26:37.02301Z",
+      "tasks_planned": 150,
+      "tasks_submitted": 150,
+      "tasks_completed": 150,
+      "tasks_dead_lettered": 0,
+      "tasks_retried": 0,
+      "task_failures": 0,
+      "duplicate_completions": 0,
+      "timed_out": false,
+      "worker_processes": 2,
+      "worker_concurrency": 4,
+      "total_slots": 8,
+      "max_in_flight": 8,
+      "experiment_duration": 1092087417,
+      "makespan": 1014102000,
+      "throughput_tasks_per_s": 147.91411514818034,
+      "latency_seconds": {
+        "Count": 150,
+        "Mean": 0.43148707333333325,
+        "P50": 0.43731200000000003,
+        "P95": 0.77554175,
+        "P99": 0.80462084,
+        "Max": 0.823408
+      },
+      "queue_wait_seconds": {
+        "Count": 150,
+        "Mean": 0.38129716000000013,
+        "P50": 0.387124,
+        "P95": 0.73001605,
+        "P99": 0.75712322,
+        "Max": 0.764831
+      },
+      "exec_seconds": {
+        "Count": 150,
+        "Mean": 0.05008000000000002,
+        "P50": 0.0495,
+        "P95": 0.059,
+        "P99": 0.06,
+        "Max": 0.06
+      },
+      "deadline_missed": 61,
+      "deadline_miss_rate": 0.4066666666666667,
+      "worker_busy_seconds": 7.528474701,
+      "worker_slot_seconds": 8.736699336000001,
+      "worker_utilization": 0.8617069686693405,
+      "jain_fairness_service": 0.9714564010343584,
+      "jain_fairness_count": 0.9752925877763329,
+      "tenant_count": 5,
+      "tenant_service_seconds": {
+        "A": 1.9160000000000001,
+        "B": 1.454,
+        "C": 1.5440000000000005,
+        "D": 1.1070000000000002,
+        "E": 1.4910000000000003
+      },
+      "tenant_completed_tasks": {
+        "A": 38,
+        "B": 30,
+        "C": 30,
+        "D": 23,
+        "E": 29
+      },
+      "tenant_spread": {
+        "max_p99_seconds": 0.8148128400000001,
+        "min_p99_seconds": 0.7673222,
+        "p99_ratio": 1.0618913932113525,
+        "min_service_share": 0.14736421725239618,
+        "max_wait_any_tenant_seconds": 0.764831
+      },
+      "producer_max_lag": 452617,
+      "producer_mean_lag": 221087,
+      "arrival_rate_per_sec": 200,
+      "exec_min_ms": 40,
+      "exec_max_ms": 60
+    },
+    {
+      "identity": {
+        "run_id": "example",
+        "scheduler": "fifo",
+        "workload": "heavy_tailed",
+        "repetition": 0,
+        "seed": 1000
+      },
+      "timestamp": "2026-09-08T09:26:38.433264Z",
+      "tasks_planned": 150,
+      "tasks_submitted": 150,
+      "tasks_completed": 150,
+      "tasks_dead_lettered": 0,
+      "tasks_retried": 0,
+      "task_failures": 0,
+      "duplicate_completions": 0,
+      "timed_out": false,
+      "worker_processes": 2,
+      "worker_concurrency": 4,
+      "total_slots": 8,
+      "max_in_flight": 8,
+      "experiment_duration": 865750042,
+      "makespan": 822499000,
+      "throughput_tasks_per_s": 182.37104239640414,
+      "latency_seconds": {
+        "Count": 150,
+        "Mean": 0.02572406,
+        "P50": 0.0175325,
+        "P95": 0.06793874999999996,
+        "P99": 0.09359397999999997,
+        "Max": 0.141729
+      },
+      "queue_wait_seconds": {
+        "Count": 150,
+        "Mean": 0.0025952999999999987,
+        "P50": 0.00245,
+        "P95": 0.00433305,
+        "P99": 0.007278749999999996,
+        "Max": 0.009531
+      },
+      "exec_seconds": {
+        "Count": 150,
+        "Mean": 0.023033333333333312,
+        "P50": 0.015,
+        "P95": 0.06494999999999994,
+        "P99": 0.09023999999999996,
+        "Max": 0.14
+      },
+      "deadline_missed": 0,
+      "deadline_miss_rate": 0,
+      "worker_busy_seconds": 3.469306123,
+      "worker_slot_seconds": 6.926000336,
+      "worker_utilization": 0.5009104756994052,
+      "jain_fairness_service": 0.9775204345727216,
+      "jain_fairness_count": 0.9752925877763329,
+      "tenant_count": 5,
+      "tenant_service_seconds": {
+        "A": 0.8150000000000003,
+        "B": 0.8040000000000003,
+        "C": 0.6850000000000002,
+        "D": 0.5710000000000002,
+        "E": 0.5800000000000002
+      },
+      "tenant_completed_tasks": {
+        "A": 38,
+        "B": 30,
+        "C": 30,
+        "D": 23,
+        "E": 29
+      },
+      "tenant_spread": {
+        "max_p99_seconds": 0.12114740999999998,
+        "min_p99_seconds": 0.071465,
+        "p99_ratio": 1.6951991884139086,
+        "min_service_share": 0.16526772793053546,
+        "max_wait_any_tenant_seconds": 0.009531
+      },
+      "producer_max_lag": 856039,
+      "producer_mean_lag": 445289,
+      "arrival_rate_per_sec": 200,
+      "exec_min_ms": 40,
+      "exec_max_ms": 60
+    },
+    {
+      "identity": {
+        "run_id": "example",
+        "scheduler": "fifo",
+        "workload": "multi_tenant",
+        "repetition": 0,
+        "seed": 1000
+      },
+      "timestamp": "2026-09-08T09:26:40.044051Z",
+      "tasks_planned": 150,
+      "tasks_submitted": 150,
+      "tasks_completed": 150,
+      "tasks_dead_lettered": 0,
+      "tasks_retried": 0,
+      "task_failures": 0,
+      "duplicate_completions": 0,
+      "timed_out": false,
+      "worker_processes": 2,
+      "worker_concurrency": 4,
+      "total_slots": 8,
+      "max_in_flight": 8,
+      "experiment_duration": 1065589708,
+      "makespan": 1030149000,
+      "throughput_tasks_per_s": 145.6100039897141,
+      "latency_seconds": {
+        "Count": 150,
+        "Mean": 0.17507671999999994,
+        "P50": 0.18997550000000002,
+        "P95": 0.2536396,
+        "P99": 0.26412049,
+        "Max": 0.267932
+      },
+      "queue_wait_seconds": {
+        "Count": 150,
+        "Mean": 0.12488414666666661,
+        "P50": 0.1348575,
+        "P95": 0.20530104999999998,
+        "P99": 0.21102884,
+        "Max": 0.214341
+      },
+      "exec_seconds": {
+        "Count": 150,
+        "Mean": 0.05008000000000001,
+        "P50": 0.0495,
+        "P95": 0.059,
+        "P99": 0.06,
+        "Max": 0.06
+      },
+      "deadline_missed": 0,
+      "deadline_miss_rate": 0,
+      "worker_busy_seconds": 7.52887708,
+      "worker_slot_seconds": 8.524717664,
+      "worker_utilization": 0.8831819864010924,
+      "jain_fairness_service": 0.24698253155617242,
+      "jain_fairness_count": 0.2461437479488021,
+      "tenant_count": 5,
+      "tenant_service_seconds": {
+        "A": 6.749000000000001,
+        "B": 0.16599999999999998,
+        "C": 0.213,
+        "D": 0.193,
+        "E": 0.191
+      },
+      "tenant_completed_tasks": {
+        "A": 135,
+        "B": 3,
+        "C": 4,
+        "D": 4,
+        "E": 4
+      },
+      "tenant_spread": {
+        "max_p99_seconds": 0.26667455,
+        "min_p99_seconds": 0.23141584,
+        "p99_ratio": 1.1523608323440608,
+        "min_service_share": 0.022097976570820015,
+        "max_wait_any_tenant_seconds": 0.214341
+      },
+      "producer_max_lag": 883215,
+      "producer_mean_lag": 456084,
+      "arrival_rate_per_sec": 200,
+      "exec_min_ms": 40,
+      "exec_max_ms": 60
+    },
+    {
+      "identity": {
+        "run_id": "example",
+        "scheduler": "priority",
+        "workload": "uniform",
+        "repetition": 0,
+        "seed": 1000
+      },
+      "timestamp": "2026-09-08T09:26:41.654009Z",
+      "tasks_planned": 150,
+      "tasks_submitted": 150,
+      "tasks_completed": 150,
+      "tasks_dead_lettered": 0,
+      "tasks_retried": 0,
+      "task_failures": 0,
+      "duplicate_completions": 0,
+      "timed_out": false,
+      "worker_processes": 2,
+      "worker_concurrency": 4,
+      "total_slots": 8,
+      "max_in_flight": 8,
+      "experiment_duration": 1046629667,
+      "makespan": 1019127000,
+      "throughput_tasks_per_s": 147.18479639927116,
+      "latency_seconds": {
+        "Count": 150,
+        "Mean": 0.1596702199999999,
+        "P50": 0.071081,
+        "P95": 0.43199794999999996,
+        "P99": 0.45109981,
+        "Max": 0.461581
+      },
+      "queue_wait_seconds": {
+        "Count": 150,
+        "Mean": 0.10922772666666665,
+        "P50": 0.017981999999999998,
+        "P95": 0.37616555,
+        "P99": 0.40036286,
+        "Max": 0.410053
+      },
+      "exec_seconds": {
+        "Count": 150,
+        "Mean": 0.050333333333333306,
+        "P50": 0.051,
+        "P95": 0.06,
+        "P99": 0.06,
+        "Max": 0.06
+      },
+      "deadline_missed": 3,
+      "deadline_miss_rate": 0.02,
+      "worker_busy_seconds": 7.5663603770000005,
+      "worker_slot_seconds": 8.373037336,
+      "worker_utilization": 0.903657785504947,
+      "jain_fairness_service": 0.9872788635636986,
+      "jain_fairness_count": 0.985977212971078,
+      "tenant_count": 5,
+      "tenant_service_seconds": {
+        "A": 1.5040000000000002,
+        "B": 1.68,
+        "C": 1.7239999999999998,
+        "D": 1.3400000000000003,
+        "E": 1.3020000000000005
+      },
+      "tenant_completed_tasks": {
+        "A": 30,
+        "B": 34,
+        "C": 34,
+        "D": 26,
+        "E": 26
+      },
+      "tenant_spread": {
+        "max_p99_seconds": 0.45673225,
+        "min_p99_seconds": 0.42747625,
+        "p99_ratio": 1.0684388898798471,
+        "min_service_share": 0.1724503311258279,
+        "max_wait_any_tenant_seconds": 0.410053
+      },
+      "producer_max_lag": 965917,
+      "producer_mean_lag": 498235,
+      "arrival_rate_per_sec": 200,
+      "exec_min_ms": 40,
+      "exec_max_ms": 60
+    },
+    {
+      "identity": {
+        "run_id": "example",
+        "scheduler": "priority",
+        "workload": "bursty",
+        "repetition": 0,
+        "seed": 1000
+      },
+      "timestamp": "2026-09-08T09:26:43.264337Z",
+      "tasks_planned": 150,
+      "tasks_submitted": 150,
+      "tasks_completed": 150,
+      "tasks_dead_lettered": 0,
+      "tasks_retried": 0,
+      "task_failures": 0,
+      "duplicate_completions": 0,
+      "timed_out": false,
+      "worker_processes": 2,
+      "worker_concurrency": 4,
+      "total_slots": 8,
+      "max_in_flight": 8,
+      "experiment_duration": 1092346500,
+      "makespan": 1012689000,
+      "throughput_tasks_per_s": 148.120498988337,
+      "latency_seconds": {
+        "Count": 150,
+        "Mean": 0.4330407533333334,
+        "P50": 0.43339099999999997,
+        "P95": 0.7925974499999999,
+        "P99": 0.81346513,
+        "Max": 0.821944
+      },
+      "queue_wait_seconds": {
+        "Count": 150,
+        "Mean": 0.3828429733333335,
+        "P50": 0.38835,
+        "P95": 0.7484611999999999,
+        "P99": 0.75746556,
+        "Max": 0.76267
+      },
+      "exec_seconds": {
+        "Count": 150,
+        "Mean": 0.050080000000000006,
+        "P50": 0.0495,
+        "P95": 0.059,
+        "P99": 0.06,
+        "Max": 0.06
+      },
+      "deadline_missed": 60,
+      "deadline_miss_rate": 0.4,
+      "worker_busy_seconds": 7.529657872,
+      "worker_slot_seconds": 8.738772,
+      "worker_utilization": 0.8616379820871856,
+      "jain_fairness_service": 0.9714564010343583,
+      "jain_fairness_count": 0.9752925877763329,
+      "tenant_count": 5,
+      "tenant_service_seconds": {
+        "A": 1.916,
+        "B": 1.454,
+        "C": 1.5440000000000003,
+        "D": 1.1070000000000002,
+        "E": 1.4909999999999999
+      },
+      "tenant_completed_tasks": {
+        "A": 38,
+        "B": 30,
+        "C": 30,
+        "D": 23,
+        "E": 29
+      },
+      "tenant_spread": {
+        "max_p99_seconds": 0.81364704,
+        "min_p99_seconds": 0.76829972,
+        "p99_ratio": 1.0590229552602206,
+        "min_service_share": 0.14736421725239618,
+        "max_wait_any_tenant_seconds": 0.76267
+      },
+      "producer_max_lag": 754702,
+      "producer_mean_lag": 244411,
+      "arrival_rate_per_sec": 200,
+      "exec_min_ms": 40,
+      "exec_max_ms": 60
+    },
+    {
+      "identity": {
+        "run_id": "example",
+        "scheduler": "priority",
+        "workload": "heavy_tailed",
+        "repetition": 0,
+        "seed": 1000
+      },
+      "timestamp": "2026-09-08T09:26:44.673023Z",
+      "tasks_planned": 150,
+      "tasks_submitted": 150,
+      "tasks_completed": 150,
+      "tasks_dead_lettered": 0,
+      "tasks_retried": 0,
+      "task_failures": 0,
+      "duplicate_completions": 0,
+      "timed_out": false,
+      "worker_processes": 2,
+      "worker_concurrency": 4,
+      "total_slots": 8,
+      "max_in_flight": 8,
+      "experiment_duration": 865734833,
+      "makespan": 822806000,
+      "throughput_tasks_per_s": 182.30299730434635,
+      "latency_seconds": {
+        "Count": 150,
+        "Mean": 0.025859073333333343,
+        "P50": 0.0184175,
+        "P95": 0.06729654999999996,
+        "P99": 0.09266462999999997,
+        "Max": 0.141254
+      },
+      "queue_wait_seconds": {
+        "Count": 150,
+        "Mean": 0.002720626666666666,
+        "P50": 0.0026955,
+        "P95": 0.0040174,
+        "P99": 0.007015009999999996,
+        "Max": 0.009807
+      },
+      "exec_seconds": {
+        "Count": 150,
+        "Mean": 0.023033333333333312,
+        "P50": 0.015,
+        "P95": 0.06494999999999994,
+        "P99": 0.09023999999999996,
+        "Max": 0.14
+      },
+      "deadline_missed": 0,
+      "deadline_miss_rate": 0,
+      "worker_busy_seconds": 3.4707626719999998,
+      "worker_slot_seconds": 6.925878664,
+      "worker_utilization": 0.5011295808632433,
+      "jain_fairness_service": 0.9775204345727216,
+      "jain_fairness_count": 0.9752925877763329,
+      "tenant_count": 5,
+      "tenant_service_seconds": {
+        "A": 0.8150000000000003,
+        "B": 0.8040000000000003,
+        "C": 0.6850000000000002,
+        "D": 0.5710000000000002,
+        "E": 0.5800000000000002
+      },
+      "tenant_completed_tasks": {
+        "A": 38,
+        "B": 30,
+        "C": 30,
+        "D": 23,
+        "E": 29
+      },
+      "tenant_spread": {
+        "max_p99_seconds": 0.12077738999999997,
+        "min_p99_seconds": 0.07187703999999999,
+        "p99_ratio": 1.6803333860158958,
+        "min_service_share": 0.16526772793053546,
+        "max_wait_any_tenant_seconds": 0.009807
+      },
+      "producer_max_lag": 858878,
+      "producer_mean_lag": 466169,
+      "arrival_rate_per_sec": 200,
+      "exec_min_ms": 40,
+      "exec_max_ms": 60
+    },
+    {
+      "identity": {
+        "run_id": "example",
+        "scheduler": "priority",
+        "workload": "multi_tenant",
+        "repetition": 0,
+        "seed": 1000
+      },
+      "timestamp": "2026-09-08T09:26:46.283946Z",
+      "tasks_planned": 150,
+      "tasks_submitted": 150,
+      "tasks_completed": 150,
+      "tasks_dead_lettered": 0,
+      "tasks_retried": 0,
+      "task_failures": 0,
+      "duplicate_completions": 0,
+      "timed_out": false,
+      "worker_processes": 2,
+      "worker_concurrency": 4,
+      "total_slots": 8,
+      "max_in_flight": 8,
+      "experiment_duration": 1065720250,
+      "makespan": 1030040000,
+      "throughput_tasks_per_s": 145.6254126053357,
+      "latency_seconds": {
+        "Count": 150,
+        "Mean": 0.17521042000000006,
+        "P50": 0.0851275,
+        "P95": 0.48665495,
+        "P99": 0.51548707,
+        "Max": 0.533642
+      },
+      "queue_wait_seconds": {
+        "Count": 150,
+        "Mean": 0.1250217266666666,
+        "P50": 0.0332895,
+        "P95": 0.4381592499999999,
+        "P99": 0.4575175,
+        "Max": 0.486502
+      },
+      "exec_seconds": {
+        "Count": 150,
+        "Mean": 0.05008000000000001,
+        "P50": 0.0495,
+        "P95": 0.059,
+        "P99": 0.06,
+        "Max": 0.06
+      },
+      "deadline_missed": 9,
+      "deadline_miss_rate": 0.06,
+      "worker_busy_seconds": 7.528297498000001,
+      "worker_slot_seconds": 8.525762,
+      "worker_utilization": 0.8830058237609729,
+      "jain_fairness_service": 0.24698253155617242,
+      "jain_fairness_count": 0.2461437479488021,
+      "tenant_count": 5,
+      "tenant_service_seconds": {
+        "A": 6.7490000000000006,
+        "B": 0.16599999999999998,
+        "C": 0.213,
+        "D": 0.193,
+        "E": 0.191
+      },
+      "tenant_completed_tasks": {
+        "A": 135,
+        "B": 3,
+        "C": 4,
+        "D": 4,
+        "E": 4
+      },
+      "tenant_spread": {
+        "max_p99_seconds": 0.5156006200000001,
+        "min_p99_seconds": 0.10695981,
+        "p99_ratio": 4.8205080020243125,
+        "min_service_share": 0.022097976570820018,
+        "max_wait_any_tenant_seconds": 0.486502
+      },
+      "producer_max_lag": 864553,
+      "producer_mean_lag": 481708,
+      "arrival_rate_per_sec": 200,
+      "exec_min_ms": 40,
+      "exec_max_ms": 60
+    },
+    {
+      "identity": {
+        "run_id": "example",
+        "scheduler": "wfq",
+        "workload": "uniform",
+        "repetition": 0,
+        "seed": 1000
+      },
+      "timestamp": "2026-09-08T09:26:47.8956Z",
+      "tasks_planned": 150,
+      "tasks_submitted": 150,
+      "tasks_completed": 150,
+      "tasks_dead_lettered": 0,
+      "tasks_retried": 0,
+      "task_failures": 0,
+      "duplicate_completions": 0,
+      "timed_out": false,
+      "worker_processes": 2,
+      "worker_concurrency": 4,
+      "total_slots": 8,
+      "max_in_flight": 8,
+      "experiment_duration": 1046714500,
+      "makespan": 1021948000,
+      "throughput_tasks_per_s": 146.7785053642651,
+      "latency_seconds": {
+        "Count": 150,
+        "Mean": 0.1622235666666667,
+        "P50": 0.15675050000000001,
+        "P95": 0.2950325,
+        "P99": 0.31080977,
+        "Max": 0.32339
+      },
+      "queue_wait_seconds": {
+        "Count": 150,
+        "Mean": 0.11178451333333335,
+        "P50": 0.1085515,
+        "P95": 0.24383115,
+        "P99": 0.25728115999999995,
+        "Max": 0.270411
+      },
+      "exec_seconds": {
+        "Count": 150,
+        "Mean": 0.05033333333333332,
+        "P50": 0.051,
+        "P95": 0.06,
+        "P99": 0.06,
+        "Max": 0.06
+      },
+      "deadline_missed": 0,
+      "deadline_miss_rate": 0,
+      "worker_busy_seconds": 7.56584087,
+      "worker_slot_seconds": 8.373716,
+      "worker_utilization": 0.9035225066147454,
+      "jain_fairness_service": 0.9872788635636985,
+      "jain_fairness_count": 0.985977212971078,
+      "tenant_count": 5,
+      "tenant_service_seconds": {
+        "A": 1.5040000000000004,
+        "B": 1.68,
+        "C": 1.7239999999999998,
+        "D": 1.3400000000000005,
+        "E": 1.3020000000000005
+      },
+      "tenant_completed_tasks": {
+        "A": 30,
+        "B": 34,
+        "C": 34,
+        "D": 26,
+        "E": 26
+      },
+      "tenant_spread": {
+        "max_p99_seconds": 0.32145818,
+        "min_p99_seconds": 0.18195999999999998,
+        "p99_ratio": 1.7666420092327986,
+        "min_service_share": 0.17245033112582786,
+        "max_wait_any_tenant_seconds": 0.270411
+      },
+      "producer_max_lag": 1106833,
+      "producer_mean_lag": 552081,
+      "arrival_rate_per_sec": 200,
+      "exec_min_ms": 40,
+      "exec_max_ms": 60
+    },
+    {
+      "identity": {
+        "run_id": "example",
+        "scheduler": "wfq",
+        "workload": "bursty",
+        "repetition": 0,
+        "seed": 1000
+      },
+      "timestamp": "2026-09-08T09:26:49.50631Z",
+      "tasks_planned": 150,
+      "tasks_submitted": 150,
+      "tasks_completed": 150,
+      "tasks_dead_lettered": 0,
+      "tasks_retried": 0,
+      "task_failures": 0,
+      "duplicate_completions": 0,
+      "timed_out": false,
+      "worker_processes": 2,
+      "worker_concurrency": 4,
+      "total_slots": 8,
+      "max_in_flight": 8,
+      "experiment_duration": 1092320833,
+      "makespan": 1005811000,
+      "throughput_tasks_per_s": 149.13338589456666,
+      "latency_seconds": {
+        "Count": 150,
+        "Mean": 0.4300408866666668,
+        "P50": 0.42659800000000003,
+        "P95": 0.8033559,
+        "P99": 0.82154686,
+        "Max": 0.823982
+      },
+      "queue_wait_seconds": {
+        "Count": 150,
+        "Mean": 0.3798445999999999,
+        "P50": 0.378136,
+        "P95": 0.7580615499999999,
+        "P99": 0.76695882,
+        "Max": 0.768249
+      },
+      "exec_seconds": {
+        "Count": 150,
+        "Mean": 0.050080000000000006,
+        "P50": 0.0495,
+        "P95": 0.059,
+        "P99": 0.06,
+        "Max": 0.06
+      },
+      "deadline_missed": 55,
+      "deadline_miss_rate": 0.36666666666666664,
+      "worker_busy_seconds": 7.529433125000001,
+      "worker_slot_seconds": 8.738566664,
+      "worker_utilization": 0.861632509598945,
+      "jain_fairness_service": 0.9714564010343584,
+      "jain_fairness_count": 0.9752925877763329,
+      "tenant_count": 5,
+      "tenant_service_seconds": {
+        "A": 1.9160000000000001,
+        "B": 1.454,
+        "C": 1.5440000000000005,
+        "D": 1.1070000000000002,
+        "E": 1.4910000000000003
+      },
+      "tenant_completed_tasks": {
+        "A": 38,
+        "B": 30,
+        "C": 30,
+        "D": 23,
+        "E": 29
+      },
+      "tenant_spread": {
+        "max_p99_seconds": 0.8234048,
+        "min_p99_seconds": 0.61397596,
+        "p99_ratio": 1.3411026711860186,
+        "min_service_share": 0.14736421725239618,
+        "max_wait_any_tenant_seconds": 0.768249
+      },
+      "producer_max_lag": 693701,
+      "producer_mean_lag": 245240,
+      "arrival_rate_per_sec": 200,
+      "exec_min_ms": 40,
+      "exec_max_ms": 60
+    },
+    {
+      "identity": {
+        "run_id": "example",
+        "scheduler": "wfq",
+        "workload": "heavy_tailed",
+        "repetition": 0,
+        "seed": 1000
+      },
+      "timestamp": "2026-09-08T09:26:50.915597Z",
+      "tasks_planned": 150,
+      "tasks_submitted": 150,
+      "tasks_completed": 150,
+      "tasks_dead_lettered": 0,
+      "tasks_retried": 0,
+      "task_failures": 0,
+      "duplicate_completions": 0,
+      "timed_out": false,
+      "worker_processes": 2,
+      "worker_concurrency": 4,
+      "total_slots": 8,
+      "max_in_flight": 8,
+      "experiment_duration": 865613750,
+      "makespan": 823255000,
+      "throughput_tasks_per_s": 182.20356997528106,
+      "latency_seconds": {
+        "Count": 150,
+        "Mean": 0.02587869999999999,
+        "P50": 0.018083000000000002,
+        "P95": 0.06760554999999996,
+        "P99": 0.09244482999999998,
+        "Max": 0.141534
+      },
+      "queue_wait_seconds": {
+        "Count": 150,
+        "Mean": 0.002741,
+        "P50": 0.0025155,
+        "P95": 0.00447415,
+        "P99": 0.008067709999999999,
+        "Max": 0.012421
+      },
+      "exec_seconds": {
+        "Count": 150,
+        "Mean": 0.023033333333333312,
+        "P50": 0.015,
+        "P95": 0.06494999999999994,
+        "P99": 0.09023999999999996,
+        "Max": 0.14
+      },
+      "deadline_missed": 0,
+      "deadline_miss_rate": 0,
+      "worker_busy_seconds": 3.470658251,
+      "worker_slot_seconds": 6.92491,
+      "worker_utilization": 0.5011846003774779,
+      "jain_fairness_service": 0.9775204345727216,
+      "jain_fairness_count": 0.9752925877763329,
+      "tenant_count": 5,
+      "tenant_service_seconds": {
+        "A": 0.8150000000000003,
+        "B": 0.8040000000000003,
+        "C": 0.6850000000000002,
+        "D": 0.5710000000000002,
+        "E": 0.5800000000000002
+      },
+      "tenant_completed_tasks": {
+        "A": 38,
+        "B": 30,
+        "C": 30,
+        "D": 23,
+        "E": 29
+      },
+      "tenant_spread": {
+        "max_p99_seconds": 0.12110784999999998,
+        "min_p99_seconds": 0.07123924,
+        "p99_ratio": 1.7000160304910605,
+        "min_service_share": 0.16526772793053546,
+        "max_wait_any_tenant_seconds": 0.012421
+      },
+      "producer_max_lag": 1930350,
+      "producer_mean_lag": 477139,
+      "arrival_rate_per_sec": 200,
+      "exec_min_ms": 40,
+      "exec_max_ms": 60
+    },
+    {
+      "identity": {
+        "run_id": "example",
+        "scheduler": "wfq",
+        "workload": "multi_tenant",
+        "repetition": 0,
+        "seed": 1000
+      },
+      "timestamp": "2026-09-08T09:26:52.526608Z",
+      "tasks_planned": 150,
+      "tasks_submitted": 150,
+      "tasks_completed": 150,
+      "tasks_dead_lettered": 0,
+      "tasks_retried": 0,
+      "task_failures": 0,
+      "duplicate_completions": 0,
+      "timed_out": false,
+      "worker_processes": 2,
+      "worker_concurrency": 4,
+      "total_slots": 8,
+      "max_in_flight": 8,
+      "experiment_duration": 1066054125,
+      "makespan": 1016084000,
+      "throughput_tasks_per_s": 147.62559001027475,
+      "latency_seconds": {
+        "Count": 150,
+        "Mean": 0.17556705333333333,
+        "P50": 0.1852105,
+        "P95": 0.2771554,
+        "P99": 0.29073688000000003,
+        "Max": 0.297576
+      },
+      "queue_wait_seconds": {
+        "Count": 150,
+        "Mean": 0.12537043999999997,
+        "P50": 0.1316055,
+        "P95": 0.2262802,
+        "P99": 0.24001025,
+        "Max": 0.244667
+      },
+      "exec_seconds": {
+        "Count": 150,
+        "Mean": 0.05008000000000001,
+        "P50": 0.0495,
+        "P95": 0.059,
+        "P99": 0.06,
+        "Max": 0.06
+      },
+      "deadline_missed": 0,
+      "deadline_miss_rate": 0,
+      "worker_busy_seconds": 7.529474123,
+      "worker_slot_seconds": 8.528433,
+      "worker_utilization": 0.8828672422002963,
+      "jain_fairness_service": 0.24698253155617242,
+      "jain_fairness_count": 0.2461437479488021,
+      "tenant_count": 5,
+      "tenant_service_seconds": {
+        "A": 6.749000000000001,
+        "B": 0.16599999999999998,
+        "C": 0.213,
+        "D": 0.193,
+        "E": 0.191
+      },
+      "tenant_completed_tasks": {
+        "A": 135,
+        "B": 3,
+        "C": 4,
+        "D": 4,
+        "E": 4
+      },
+      "tenant_spread": {
+        "max_p99_seconds": 0.29129008,
+        "min_p99_seconds": 0.0685804,
+        "p99_ratio": 4.24742462861109,
+        "min_service_share": 0.022097976570820015,
+        "max_wait_any_tenant_seconds": 0.244667
+      },
+      "producer_max_lag": 926289,
+      "producer_mean_lag": 447656,
+      "arrival_rate_per_sec": 200,
+      "exec_min_ms": 40,
+      "exec_max_ms": 60
+    }
+  ]
+}

@@ -1,674 +1,940 @@
 # Distributed Task Queue with Pluggable Scheduling
 
-> An experimental distributed task queue for evaluating how scheduling policies affect latency, throughput, deadline compliance, fairness, and starvation under realistic workloads.
+An experimental distributed task queue in which the **scheduling policy is a
+first-class, swappable component**, built to measure how that choice affects
+latency, throughput, deadline compliance, fairness and starvation under
+controlled workloads.
 
-## Overview
-
-Modern applications often need to execute work asynchronously. Sending emails, generating reports, processing files, and running background jobs should not force users to wait for completion.
-
-This project implements a **distributed task queue** in which the scheduling policy is a first-class, swappable component.
-
-Instead of hard-coding a single queue discipline, the system allows different schedulers to decide which pending task should execute next. The project then benchmarks these policies under controlled workloads to study their impact on system performance.
-
-The central research question is:
-
-> **How does the choice of scheduling policy affect latency, throughput, deadline compliance, fairness, and starvation in a distributed task queue under different workload distributions?**
-
-The project is designed both as a systems engineering project and as an experimental platform for empirical scheduling research.
+Go 1.23+ · Redis 7+ Streams · Prometheus · Docker Compose · kind · Python analysis
 
 ---
 
-## Key Features
+## The research question
 
-* Distributed task processing using Redis Streams
-* Consumer groups and task acknowledgements
-* Pluggable scheduler architecture
-* FIFO scheduling
-* Priority scheduling
-* Earliest Deadline First (EDF) scheduling
-* Weighted Fair Queuing (WFQ)
-* Worker failure recovery using visibility timeouts
-* Retry limits and dead-letter queue support
-* At-least-once task delivery semantics
-* Idempotent task execution model
-* Reproducible workload generation using fixed random seeds
-* Prometheus metrics
-* Automated benchmark execution
-* CSV result generation
-* Automated performance plots
-* Local Kubernetes deployment using `kind`
-* Horizontal worker scaling
-* Controlled experiments across multiple workload distributions
+> How does the choice of scheduling policy affect latency, throughput, deadline
+> compliance, fairness and starvation in a distributed task queue under
+> different workload distributions?
+
+Most task queues hard-code one queue discipline, almost always arrival order.
+This project makes the discipline pluggable, puts a **real central scheduler**
+between producers and workers, and runs a 4 x 4 matrix of schedulers against
+workloads so that the trade-offs can be measured rather than asserted.
+
+The contribution is empirical, not algorithmic: these are four well-known
+policies, compared carefully under controlled conditions.
+
+**Four schedulers** — `fifo`, `priority`, `edf`, `wfq`
+**Four workloads** — `uniform`, `bursty`, `heavy_tailed`, `multi_tenant`
+**16 primary experiments**, repeatable with controlled seeds.
 
 ---
 
 ## Architecture
 
-```text
-                         ┌─────────────────────┐
-                         │      Producer       │
-                         │  Workload Generator │
-                         └──────────┬──────────┘
-                                    │
-                                    ▼
-                         ┌─────────────────────┐
-                         │        Redis        │
-                         │      Streams        │
-                         │                     │
-                         │  Pending Tasks      │
-                         └──────────┬──────────┘
-                                    │
-                                    ▼
-                         ┌─────────────────────┐
-                         │      Scheduler      │
-                         │                     │
-                         │  ┌───────────────┐  │
-                         │  │ FIFO          │  │
-                         │  │ Priority      │  │
-                         │  │ EDF           │  │
-                         │  │ WFQ           │  │
-                         │  └───────────────┘  │
-                         └──────────┬──────────┘
-                                    │
-                      ┌─────────────┼─────────────┐
-                      ▼             ▼             ▼
-                 ┌────────┐    ┌────────┐    ┌────────┐
-                 │Worker 1│    │Worker 2│    │Worker N│
-                 └────┬───┘    └────┬───┘    └────┬───┘
-                      │             │             │
-                      └─────────────┼─────────────┘
-                                    ▼
-                         ┌─────────────────────┐
-                         │   Metrics Layer     │
-                         │     Prometheus      │
-                         └──────────┬──────────┘
-                                    ▼
-                         ┌─────────────────────┐
-                         │ Benchmark Harness   │
-                         │ CSV + Plots + Report│
-                         └─────────────────────┘
+```mermaid
+flowchart TD
+    P[Producer<br/>seeded workload] -->|XADD| ING[(ingress stream)]
+    ING -->|XREADGROUP| SI[Scheduler: ingest]
+    SI -->|policy.Rank| RANK{{fifo / priority / edf / wfq}}
+    RANK -->|admit.lua| PEND[(pending ZSET<br/>+ payload HASH)]
+    SD[Scheduler: dispatch] --> PEND
+    PEND -->|dispatch.lua<br/>ZPOPMIN + XADD, atomic| EXEC[(exec stream)]
+    EXEC -->|XREADGROUP| W[Worker slots]
+    W -->|complete.lua<br/>HSETNX + XADD + XACK| RES[(results stream)]
+    EXEC -.->|XAUTOCLAIM after<br/>visibility timeout| REC[Recovery loop]
+    REC -->|retry| EXEC
+    REC -->|budget exhausted| DLQ[(dead-letter stream)]
+    RES --> B[Benchmark: CSV + statistics]
+    SI -.-> M[/scheduler metrics :9101/]
+    W -.-> MW[/worker metrics :9102/]
 ```
 
-The system consists of six primary components:
-
-### 1. Broker
-
-Redis Streams stores tasks and provides consumer groups and acknowledgement mechanisms.
-
-Redis is intentionally used as the broker rather than implementing a custom message broker. The goal of this project is to study **task scheduling**, not broker implementation.
-
-### 2. Producer
-
-The producer generates tasks according to configurable workload distributions.
-
-Each task may contain metadata such as:
-
-* Task ID
-* Submission timestamp
-* Simulated execution duration
-* Priority
-* Deadline
-* Tenant ID
-* Retry count
-
-### 3. Scheduler
-
-The scheduler determines which waiting task should execute next.
-
-All scheduling algorithms implement a common interface, allowing the active scheduler to be changed through configuration without modifying workers or producers.
-
-Conceptually:
+<details>
+<summary>ASCII version</summary>
 
 ```text
-select_next(pending_tasks, available_workers) -> task
+  Producer
+     |  XADD
+     v
+  ingress stream --- XREADGROUP (group: schedulers) --> Scheduler ingest
+                                                            |
+                                                     policy.Rank(task)
+                                                            |  admit.lua (atomic)
+                                                            v
+                                                  pending ZSET + payload HASH
+                                                            |
+                                           dispatch.lua: ZPOPMIN + XADD (atomic)
+                                                            v
+  exec stream --- XREADGROUP (group: workers) --> Worker slots (simulated work)
+        ^                                                   |
+        |                                      complete.lua: HSETNX + XADD + XACK
+        |  XAUTOCLAIM after visibility timeout              v
+        +--------------- Recovery loop                results stream
+                             |
+                             +-- budget exhausted --> dead-letter stream
 ```
+</details>
 
-This abstraction is the core of the project.
-
-### 4. Workers
-
-Workers execute tasks independently.
-
-For controlled experiments, task execution is simulated using a configurable sleep duration. This allows scheduler behavior to be studied without application-specific computation affecting results.
-
-Workers acknowledge successful tasks and participate in failure recovery and retry handling.
-
-### 5. Metrics Layer
-
-Prometheus collects operational and experimental metrics including:
-
-* Queue wait time
-* End-to-end task latency
-* Execution duration
-* Deadline misses
-* Worker utilisation
-* Throughput
-* Retry counts
-* Task failures
-
-### 6. Benchmark Harness
-
-The benchmark harness automatically runs scheduling experiments and produces:
-
-* Raw CSV results
-* Aggregated metrics
-* Latency statistics
-* Fairness measurements
-* Performance plots
+The scheduler is a genuine decision point, not an emergent property of consumer
+order. Producers write only to the ingress stream; workers only ever see tasks
+the scheduler has already ranked and dispatched. See
+[docs/architecture.md](docs/architecture.md).
 
 ---
-
-# Scheduling Policies
-
-## FIFO
-
-**First In, First Out** executes the oldest waiting task first.
-
-FIFO acts as the baseline scheduler.
-
-### Advantages
-
-* Simple
-* Predictable
-* Low scheduling overhead
-
-### Limitations
-
-FIFO does not consider priority, deadlines, task size, or tenants. Under heavy-tailed workloads, long-running tasks can contribute to head-of-line blocking.
-
----
-
-## Priority Scheduling
-
-Tasks are assigned priority classes, and higher-priority tasks are scheduled before lower-priority tasks.
-
-### Advantages
-
-* Fast handling of important work
-* Useful for latency-sensitive operations
-
-### Limitations
-
-Under sustained high-priority traffic, low-priority tasks may experience starvation.
-
-The experiments intentionally measure whether this starvation occurs.
-
----
-
-## Earliest Deadline First (EDF)
-
-EDF selects the task with the nearest deadline.
-
-### Advantages
-
-* Explicitly deadline-aware
-* Strong theoretical properties under appropriate scheduling assumptions
-
-### Limitations
-
-When the system is heavily overloaded, not all deadlines can necessarily be satisfied. EDF behavior under overload is therefore evaluated experimentally rather than assuming performance from theory.
-
----
-
-## Weighted Fair Queuing
-
-Weighted Fair Queuing allocates service across tenants according to configured weights.
-
-For example:
-
-```text
-Tenant A: weight 5
-Tenant B: weight 2
-Tenant C: weight 1
-```
-
-The scheduler attempts to prevent a high-volume tenant from consuming all available processing capacity.
-
-This policy is particularly relevant for multi-tenant systems and noisy-neighbor scenarios.
-
----
-
-# Workloads
-
-Each scheduler is tested against four controlled workload types.
-
-## 1. Uniform
-
-A steady arrival pattern with similar task durations.
-
-This acts as the control workload.
-
----
-
-## 2. Bursty
-
-Periods of relatively low traffic are interrupted by sudden spikes.
-
-The workload generator models arrivals using configurable stochastic processes, including Poisson-based arrivals and burst events.
-
-This tests scheduler behavior during temporary overload.
-
----
-
-## 3. Heavy-Tailed
-
-Most tasks are short, while a small percentage are significantly longer.
-
-Task durations can be generated using a Pareto-like heavy-tailed distribution.
-
-Example:
-
-```text
-Most tasks: approximately 100 ms
-Rare tasks: up to tens of seconds
-```
-
-This workload is intended to expose the effect of long jobs on queue latency and head-of-line blocking.
-
----
-
-## 4. Multi-Tenant Skew
-
-One tenant produces most of the workload while several other tenants submit relatively few tasks.
-
-Example:
-
-```text
-Tenant A: 90%
-Tenant B: 3%
-Tenant C: 3%
-Tenant D: 2%
-Tenant E: 2%
-```
-
-This workload evaluates fairness and noisy-neighbor behavior.
-
----
-
-# Experimental Matrix
-
-The baseline experiment consists of:
-
-| Scheduler             | Uniform | Bursty | Heavy-Tailed | Multi-Tenant Skew |
-| --------------------- | ------: | -----: | -----------: | ----------------: |
-| FIFO                  |       ✓ |      ✓ |            ✓ |                 ✓ |
-| Priority              |       ✓ |      ✓ |            ✓ |                 ✓ |
-| EDF                   |       ✓ |      ✓ |            ✓ |                 ✓ |
-| Weighted Fair Queuing |       ✓ |      ✓ |            ✓ |                 ✓ |
-
-This produces **16 primary scheduler-workload experiments**.
-
-Each experiment can be repeated multiple times using controlled random seeds.
-
----
-
-# Metrics
-
-## Latency
-
-Task latency statistics include:
-
-* p50
-* p95
-* p99
-
-The p99 latency is particularly important because it captures poor tail performance that averages can hide.
-
----
-
-## Deadline Miss Rate
-
-The proportion of tasks that complete after their configured deadline.
-
-```text
-deadline_miss_rate =
-    missed_deadlines / total_tasks
-```
-
----
-
-## Throughput
-
-The number of successfully completed tasks per second.
-
----
-
-## Worker Utilisation
-
-The fraction of time workers spend executing tasks rather than remaining idle.
-
----
-
-## Jain's Fairness Index
-
-Fairness across tenants is measured using Jain's Fairness Index:
-
-```text
-J(x) = (Σxi)² / (n × Σxi²)
-```
-
-where `xi` represents the service received by tenant `i`.
-
-A value closer to `1` indicates more equal allocation.
-
----
-
-## Starvation
-
-The system records the longest waiting time observed for an individual task.
-
-This is especially relevant for priority scheduling.
-
----
-
-# Delivery Semantics and Failure Handling
-
-The queue uses **at-least-once delivery**.
-
-Exactly-once processing is intentionally not a project goal.
-
-Instead, tasks are designed around the production-oriented model:
-
-> At-least-once delivery + idempotent task execution.
-
-## Worker Failure Recovery
-
-If a worker receives a task but fails before acknowledging completion, the task must not disappear permanently.
-
-The system therefore supports a visibility timeout:
-
-```text
-Task delivered
-      ↓
-Worker processes task
-      ↓
-Acknowledgement received?
-      ├── Yes → task completed
-      │
-      └── No
-            ↓
-      Visibility timeout expires
-            ↓
-      Task becomes eligible for recovery/retry
-```
-
-## Retries
-
-Tasks have configurable retry limits.
-
-Repeatedly failing tasks are eventually moved to a dead-letter queue for inspection.
-
----
-
-# Reproducibility
-
-Experimental reproducibility is a core design requirement.
-
-Each benchmark configuration records:
-
-* Random seed
-* Scheduler
-* Workload type
-* Arrival parameters
-* Task duration parameters
-* Number of workers
-* Experiment duration
-* System configuration
-
-The same seed and configuration should reproduce the same generated workload.
-
-System-level execution timing may still introduce variation, so benchmark experiments should be repeated and reported with appropriate summary statistics.
-
----
-
-# Project Structure
-
-```text
-.
-├── cmd/
-│   ├── producer/
-│   ├── scheduler/
-│   ├── worker/
-│   └── benchmark/
-│
-├── internal/
-│   ├── broker/
-│   ├── scheduler/
-│   │   ├── fifo/
-│   │   ├── priority/
-│   │   ├── edf/
-│   │   └── wfq/
-│   ├── worker/
-│   ├── metrics/
-│   └── recovery/
-│
-├── workloads/
-│   ├── uniform/
-│   ├── bursty/
-│   ├── heavy_tailed/
-│   └── multi_tenant/
-│
-├── configs/
-├── experiments/
-├── scripts/
-├── deploy/
-│   ├── docker/
-│   └── kubernetes/
-│
-├── results/
-├── docs/
-└── README.md
-```
-
-The final directory structure may evolve as implementation progresses.
-
----
-
-# Quick Start
 
 ## Prerequisites
 
-* Docker
-* Redis
-* Python or the selected implementation runtime
-* Prometheus
-* `kind`
-* Kubernetes CLI
-* Helm
+| Requirement | Version | Needed for |
+| --- | --- | --- |
+| Go | 1.23 or newer | building and running everything |
+| Redis | 7.0 or newer | the broker; `XAUTOCLAIM` requires 6.2+, streams behaviour is tested against 7 |
+| Docker + Compose v2 | any recent | `make up`, `make redis-up`, image builds |
+| Python | 3.9 or newer | analysis and plots |
+| kind | 0.20+ | local Kubernetes deployment (optional) |
+| kubectl | 1.27+ | local Kubernetes deployment (optional) |
+| GNU Make | any | the workflows below |
 
-### Start Redis
+No cloud account is required. Nothing outside these tools is needed.
 
-```bash
-docker compose up -d redis
-```
+Redis can be your own local install, a container, or a remote server via
+`--redis-addr`.
 
-### Run the Producer
+---
 
-```bash
-<implementation command>
-```
-
-### Start Workers
+## One-command start
 
 ```bash
-<implementation command>
+make up
 ```
 
-### Select a Scheduler
+That builds the image and starts Redis, one scheduler, two workers and
+Prometheus. Then submit work and watch it drain:
 
-Example configuration:
-
-```yaml
-scheduler: fifo
+```bash
+make submit                 # producer submits 500 uniform tasks
+make status                 # queue depth, counters, per-tenant service
+open http://localhost:9090  # Prometheus
 ```
 
-Available policies:
+Switch the scheduling policy without touching producers or workers:
+
+```bash
+SCHEDULER=wfq make up
+```
+
+Tear down:
+
+```bash
+make down
+```
+
+### Without Docker
+
+```bash
+redis-server --port 6379 &            # or: make redis-up
+make build
+
+./bin/scheduler --policy=wfq &
+./bin/worker --concurrency=4 &
+./bin/producer --workload=multi_tenant --count=500
+./bin/tqctl status
+```
+
+---
+
+## Exact commands
+
+Every workflow has a Make target; `make help` lists them all. The underlying
+commands are shown so nothing is hidden behind the Makefile.
+
+### Producer
+
+```bash
+make run-producer WORKLOAD=bursty COUNT=1000 SEED=42
+
+go run ./cmd/producer --config configs/default.yaml \
+  --workload heavy_tailed --count 2000 --seed 7 --rate 300
+go run ./cmd/producer --workload multi_tenant --count 500 --dry-run   # generate only
+go run ./cmd/producer --workload uniform --count 500 --id-prefix batch2
+```
+
+> **Task IDs are deterministic.** They are a function of the seed and
+> `id_prefix`, which is exactly what makes a run reproducible. The flip side is
+> that submitting the same seed and prefix twice into the same namespace
+> regenerates the same IDs, and the scheduler's admission guard correctly
+> rejects the repeats — they show up in `tq_duplicate_admissions_total`. The
+> producer checks up front and warns with the fix: use a different
+> `--id-prefix` or `--seed`, or clear the namespace with `tqctl reset --yes`.
+
+### Scheduler
+
+```bash
+make run-scheduler SCHEDULER=edf
+
+go run ./cmd/scheduler --config configs/default.yaml \
+  --policy wfq --metrics-addr :9101 --max-in-flight 32
+go run ./cmd/scheduler --policy fifo --recovery=false   # recovery loop off
+```
+
+### Worker
+
+```bash
+make run-worker CONCURRENCY=8
+
+go run ./cmd/worker --config configs/default.yaml \
+  --concurrency 8 --metrics-addr :9102
+# scale out by starting more processes; each is its own consumer
+go run ./cmd/worker --name worker-b --metrics-addr :9103
+```
+
+### Recovery and failure injection
+
+The recovery loop runs inside the scheduler process and is on by default.
+
+```bash
+# a worker that abandons 30% of tasks after executing, before acknowledging
+make run-worker-flaky
+go run ./cmd/worker --fail-before-ack-rate 0.3 --fail-rate 0.05 --name flaky
+
+make dlq          # inspect what could not be recovered
+make status       # watch tq retries and unacked deliveries
+```
+
+### Metrics
+
+```bash
+curl -s localhost:9101/metrics | grep '^tq_'    # scheduler
+curl -s localhost:9102/metrics | grep '^tq_'    # workers
+curl -s localhost:9101/readyz                   # readiness probe
+make metrics
+```
+
+### Tests
+
+```bash
+make test               # unit tests, race detector, no external services
+make test-integration   # integration tests against a real Redis
+make test-all           # both
+make check              # gofmt + go vet + unit tests
+make verify             # the above plus integration tests
+make cover              # unit-test coverage summary
+make cover-all          # combined unit + integration coverage
+```
+
+Integration tests are behind the `integration` build tag, so `go test ./...`
+never needs Redis. They pick up `TQ_TEST_REDIS_ADDR`, defaulting to
+`localhost:6379`, and each test uses its own randomly named key namespace which
+it deletes afterwards, so running them against a shared development Redis is
+safe.
+
+### Benchmark matrix
+
+```bash
+make bench-quick                          # all 16 experiments, a couple of minutes
+make bench-full REPETITIONS=5             # longer runs, reportable
+make bench-failure                        # with 20% pre-ack failures
+make bench-one SCHEDULER=wfq WORKLOAD=multi_tenant
+
+go run ./cmd/benchmark \
+  --config experiments/full.yaml \
+  --schedulers fifo,priority,edf,wfq \
+  --workloads uniform,bursty,heavy_tailed,multi_tenant \
+  --repetitions 5 --workers 4 --concurrency 4 \
+  --run-id my-experiment --results-dir results
+```
+
+### Plots
+
+```bash
+make python-deps        # one-time: creates .venv with pandas, matplotlib, seaborn
+make plots              # charts for the newest run
+make plots RUN=my-experiment
+
+python3 scripts/plot_results.py --results-dir results --run my-experiment --format png,svg
+```
+
+### Local Kubernetes with kind
+
+```bash
+make kind-up                       # create cluster, build image, load, deploy
+make kind-submit                   # run the producer Job
+make kind-scale WORKER_REPLICAS=6  # scale workers horizontally
+make kind-status                   # queue state from inside the cluster
+make kind-dlq                      # dead letters from inside the cluster
+make kind-metrics                  # port-forward scheduler metrics to :9101
+make kind-prometheus               # port-forward Prometheus to :9090
+make kind-up-wfq                   # deploy the weighted-fair-queuing overlay
+make kind-down                     # delete only this project's cluster
+```
+
+Raw equivalents:
+
+```bash
+scripts/kind-up.sh --cluster taskqueue --workers 4
+kubectl --context kind-taskqueue -n taskqueue scale deployment/worker --replicas=6
+kubectl --context kind-taskqueue -n taskqueue exec deploy/scheduler -- \
+  tqctl dlq --config /etc/taskqueue/config.yaml
+scripts/kind-down.sh --cluster taskqueue
+```
+
+`kind-down.sh` deletes only the named cluster; other kind clusters are untouched.
+
+### Scaling workers horizontally
+
+```bash
+docker compose up -d --scale worker=6                                  # Compose
+kubectl -n taskqueue scale deployment/worker --replicas=6              # Kubernetes
+go run ./cmd/worker --name worker-c --metrics-addr :9104               # bare process
+```
+
+Workers are stateless consumers of one Redis Streams consumer group, so they
+scale without coordination. The **scheduler is deliberately single-replica**: it
+owns the pending index and the WFQ virtual clock, and two of them would rank
+tasks against divergent virtual time.
+
+---
+
+## Configuration reference
+
+Configuration is YAML, with flags overriding file values and a handful of
+environment variables (`TQ_CONFIG`, `TQ_REDIS_ADDR`, `TQ_NAMESPACE`,
+`TQ_LOG_LEVEL`, `TQ_LOG_FORMAT`) overriding nothing but supplying defaults.
+Everything is validated at startup; a misconfigured process exits with a
+message naming the offending field rather than running incorrectly.
+
+Every duration is a Go duration string with explicit units (`250ms`, `2s`,
+`1m30s`). Every field ending in `_ms` is an integer count of milliseconds.
+There are no ambiguous time units anywhere.
+
+Shipped files: `configs/default.yaml` (fully commented), `configs/priority.yaml`,
+`configs/edf.yaml`, `configs/wfq.yaml`, `configs/docker.yaml`, plus the
+experiment profiles in `experiments/`.
+
+### `redis`
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `addr` | `localhost:6379` | Broker address. |
+| `password` | `""` | Redis password. |
+| `db` | `0` | Database number. |
+| `dial_timeout` / `read_timeout` / `write_timeout` | `5s` / `3s` / `3s` | Connection timeouts. |
+| `pool_size` | `32` | Connection pool size. Must exceed the number of blocking consumers. |
+
+### `streams`
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `namespace` | `tq` | Prefix for every Redis key. Independent experiments can share one Redis. |
+| `ingress_stream` | `ingress` | Producer to scheduler. |
+| `exec_stream` | `exec` | Scheduler to workers. |
+| `results_stream` | `results` | Terminal task records. |
+| `dead_letter_stream` | `dead` | Tasks that exhausted their retry budget. |
+| `scheduler_group` | `schedulers` | Consumer group on the ingress stream. |
+| `worker_group` | `workers` | Consumer group on the execution stream. |
+| `max_len` | `0` | Approximate stream trim length. `0` disables trimming, which is what experiments want. |
+
+### `scheduler`
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `policy` | `fifo` | `fifo`, `priority`, `edf` or `wfq`. |
+| `ingest_batch` | `256` | Ingress entries read per call. |
+| `ingest_block` | `200ms` | How long `XREADGROUP` blocks on the ingress stream. |
+| `dispatch_batch` | `32` | Tasks dispatched per loop pass. |
+| `idle_sleep` | `2ms` | Back-off when there is nothing to dispatch. Must be positive; this is what stops a busy loop. |
+| `max_in_flight` | `64` | Cap on dispatched-but-unfinished tasks. `0` is unlimited. **Set this close to the total worker slot count**, or the execution stream becomes the real queue and every policy degrades to arrival order. |
+| `metrics_addr` | `:9101` | Prometheus listen address. Empty disables the endpoint. |
+| `tenant_weights` | all `1` | Relative WFQ weights per tenant. Ignored by other policies. |
+| `default_tenant_weight` | `1` | Weight for tenants absent from the map. |
+| `state_flush_interval` | `1s` | How often policy state is persisted to Redis. |
+
+### `worker`
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `name` | `""` | Consumer name prefix; empty derives `hostname-pid`. |
+| `concurrency` | `4` | Parallel execution slots. |
+| `block` | `500ms` | How long `XREADGROUP` blocks on the execution stream. |
+| `metrics_addr` | `:9102` | Prometheus listen address. |
+| `fail_before_ack_rate` | `0.0` | Probability of abandoning a task after executing and before acknowledging, simulating a crash. |
+| `fail_rate` | `0.0` | Probability of reporting an application error. |
+| `fail_seed` | `0` | Makes injected failures reproducible; `0` derives a seed from the worker name. |
+| `shutdown_grace` | `15s` | How long in-flight work may run after shutdown begins. |
+
+### `recovery`
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `enabled` | `true` | Runs the recovery loop inside the scheduler process. |
+| `interval` | `500ms` | How often `XAUTOCLAIM` runs. |
+| `min_idle` | `10s` | **Visibility timeout.** How long a delivered-but-unacknowledged entry may sit before it is reclaimed. Must exceed your longest task, or healthy work gets duplicated. |
+| `batch` | `128` | Maximum entries reclaimed per pass. |
+| `max_retries` | `3` | Retry budget for tasks whose payload carries `max_retries: 0`. |
+
+### `workload`
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `type` | `uniform` | `uniform`, `bursty`, `heavy_tailed`, `multi_tenant`. |
+| `seed` | `42` | Fixes the pseudo-random stream. |
+| `count` | `500` | Total tasks. The workload is finite so benchmarks terminate. |
+| `id_prefix` | `task` | Prefix for generated task IDs. |
+| `arrival_rate_per_sec` | `120` | Mean arrival rate. |
+| `max_retries` | `3` | Stamped onto every generated task. |
+| `exec.min_ms` / `exec.max_ms` | `40` / `60` | Uniform duration bounds. |
+| `priority.weights` | `[40,25,20,10,5]` | Relative frequency of priority 0..n; higher index is more important. |
+| `deadline.base_ms` | `250` | Fixed slack. |
+| `deadline.exec_multiplier` | `3` | Slack proportional to the task's own duration. |
+| `deadline.jitter_ms` | `250` | Uniform random extra slack. |
+| `tenants` | five at 0.2 | Tenant shares for non-skewed workloads. Must sum to 1. |
+| `skew_tenants` | 90/3/3/2/2 | Tenant shares used when `type: multi_tenant`. |
+| `burst.*` | see file | Base rate, burst rate, burst duration and period. |
+| `heavy_tail.min_ms` / `max_ms` / `alpha` | `15` / `4000` / `1.3` | Pareto parameters; smaller alpha means a heavier tail. |
+
+### `log`
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `level` | `info` | `debug`, `info`, `warn`, `error`. |
+| `format` | `text` | `text` or `json`. |
+
+---
+
+## Scheduling algorithms
+
+All four implement one interface. A policy converts a task into an ordering key,
+and the machinery always dispatches the smallest key first:
+
+```go
+type Key struct {
+    Score  float64 // lower dispatches first
+    Member string  // "<zero-padded submit millis>|<task id>", the tie-break
+}
+```
+
+Redis sorted sets order equal-score members lexicographically by byte value,
+which is exactly Go string comparison. That means the in-memory queue used by
+the unit tests and the `ZPOPMIN` used in production **cannot disagree**: the
+ordering asserted in the tests is the ordering the deployed system produces.
+An integration test checks this against a real Redis.
+
+### `fifo` — first in, first out
+
+Score is the submission time in Unix milliseconds. Ties break by task ID.
+
+The experimental baseline. No knowledge of priority, deadlines, task size or
+tenants.
+
+*Caveats.* Under a heavy-tailed workload a single long task blocks everything
+behind it (head-of-line blocking). Under tenant skew a dominant tenant's backlog
+delays every small tenant equally, which looks fair but is exactly the
+noisy-neighbour failure.
+
+### `priority` — strict priority
+
+Higher numeric priority first; ties break by submission time, then task ID.
+
+Priority and submission time are packed into one float64 score as
+`(255 - priority) * 1e13 + submitted_millis`. Unix milliseconds stay below 1e13
+until the year 2286, so a submission time can never leak into the next priority
+band, and the largest possible score is well inside the range where float64
+represents integers exactly.
+
+*Caveats.* **Deliberately starvation-prone.** There is no ageing: a sustained
+stream of high-priority work can hold low-priority tasks back indefinitely. That
+is the point — the experiments measure the effect rather than hiding it. Expect
+the best p50 of the four and the worst p99 and maximum wait. Priorities are
+clamped to `[0, 255]`.
+
+### `edf` — earliest deadline first
+
+Score is the absolute deadline in Unix milliseconds; ties break by submission
+time, then task ID. Tasks with no deadline sort after every task that has one.
+
+*Caveats.* EDF is optimal for uniprocessor scheduling only when the system is
+**not** overloaded. Under overload it degrades sharply, because it keeps
+preferring tasks that are already about to miss and misses them anyway while
+delaying tasks that could still have been met. The overload behaviour here is a
+measured result, not an assumption. EDF also ignores priority entirely.
+
+### `wfq` — weighted fair queuing
+
+Per-tenant fairness using **self-clocked fair queuing (SCFQ)** virtual finish
+times.
+
+On admission of task `t` from tenant `k` with weight `w_k`:
+
+```
+start_t  = max(virtualTime, lastFinish[k])
+finish_t = start_t + cost(t) / w_k
+lastFinish[k] = finish_t
+order t by finish_t
+```
+
+On dispatch of a task with virtual finish `f`:
+
+```
+virtualTime = max(virtualTime, f)
+```
+
+`cost(t)` is the task's simulated duration in milliseconds. Dividing by the
+tenant weight means a tenant with weight 5 advances its virtual clock five times
+more slowly per unit of work, so it receives roughly five times the service.
+Because a newly active tenant starts at `max(virtualTime, lastFinish)`, an idle
+tenant cannot bank credit and then flood the queue, and a backlogged tenant
+cannot run ahead of virtual time. **That is the mechanism that stops a dominant
+tenant from consuming all capacity**, and it is asserted directly in
+`TestDominantTenantCannotStarveOthers` and
+`TestFIFOStarvesSmallTenantWhereWFQDoesNot`.
+
+*Approximations, stated explicitly.*
+
+1. Virtual time advances on **dispatch events** (SCFQ) rather than by emulating
+   a GPS fluid server. This is cheaper and needs no per-packet simulation, at
+   the cost of a larger worst-case delay bound than WF2Q.
+2. Scheduling is **non-preemptive at whole-task granularity**. Once dispatched,
+   a task runs to completion, so fairness is only approximate over horizons
+   shorter than the largest task. This matters most on the heavy-tailed workload.
+3. `cost(t)` uses the task's **declared** duration, which this system knows
+   exactly. A production scheduler would have to estimate it, and estimation
+   error degrades fairness. These results are therefore an upper bound on WFQ's
+   achievable fairness.
+4. Ordering is over the whole pending set rather than per-tenant sub-queues.
+   Since virtual finish times within one tenant increase monotonically by
+   construction, per-tenant FIFO order is preserved anyway.
+
+WFQ is also the only stateful policy: its virtual clock and per-tenant finish
+tags are persisted to Redis and restored on restart.
+
+---
+
+## Delivery semantics and idempotency
+
+**The queue provides at-least-once delivery. It does not provide exactly-once
+delivery and does not claim to.**
+
+A task may execute more than once. This happens whenever a worker executes a
+task and then dies, is killed, or loses its connection before acknowledging: the
+entry stays in the consumer group's pending entries list, the recovery loop
+reclaims it after the visibility timeout, and another worker runs it again.
+
+What is guaranteed instead:
+
+> **Completion is recorded exactly once per task ID.** However many times a task
+> body executes, exactly one result record is written to the results stream,
+> exactly one completion is counted, and tenant service accounting is
+> incremented exactly once.
+
+The guarantee is enforced by a single `HSETNX` on a Redis hash of completed task
+IDs, inside the same atomic Lua script that writes the result record, updates
+the counters and acknowledges the delivery. A second completion for the same
+task ID finds the key present, writes nothing, increments
+`tq_duplicate_completions_total`, and still acknowledges the redundant delivery.
+Since the guard, the result write and the acknowledgement are one atomic unit,
+there is no window in which a result is recorded but the acknowledgement is
+lost, or vice versa.
+
+The precise scope of the guarantee:
+
+| Property | Guaranteed? |
+| --- | --- |
+| Every submitted task eventually reaches a terminal state (completed or dead-lettered) | Yes, given a retry budget and a live worker |
+| A task body executes at most once | **No.** Duplicate execution is expected under failure. |
+| A task's completion is recorded at most once | **Yes**, keyed by task ID |
+| A task's completion is recorded at least once, given it completes | **Yes** |
+| Tenant service accounting counts a task once | **Yes** |
+| No task is lost between selection and dispatch | **Yes**, `ZPOPMIN` and `XADD` are one atomic script |
+| A redelivered ingress entry creates a duplicate pending task | **No**, admission is guarded by the same completed/pending check |
+| Ordering across concurrent workers | **No.** Dispatch order is exact; completion order is not, since workers run in parallel. |
+
+The practical consequence for anyone extending this with real work: **task
+handlers must be idempotent.** The queue makes recording the outcome idempotent;
+it cannot make an arbitrary side effect idempotent for you.
+
+---
+
+## Failure recovery and the dead-letter workflow
 
 ```text
-fifo
-priority
-edf
-wfq
+task dispatched
+      |
+      v
+worker executes
+      |
+      +-- acknowledged --------------------> completed (recorded once)
+      |
+      +-- application error ---------------> retry or dead-letter immediately
+      |
+      +-- worker dies before acknowledging
+                |
+                v
+          entry sits in the consumer group PEL, idle time growing
+                |
+          idle > recovery.min_idle (visibility timeout)
+                |
+                v
+          XAUTOCLAIM reclaims it
+                |
+                +-- retry_count < max_retries --> redelivered, retry_count += 1,
+                |                                 new attempt_id
+                |
+                +-- budget exhausted -----------> dead-letter stream,
+                                                  with failure metadata
 ```
 
-### Run a Benchmark
+Retry counts increment on the task payload itself and each retry gets a fresh
+`attempt_id` while the `id` stays stable — the ID is what idempotency keys on,
+the attempt ID is what makes individual deliveries traceable.
+
+A dead-letter record carries the full task, the failure reason, the attempt
+count, the last attempt ID and the failure timestamp.
+
+### Inspecting dead letters
 
 ```bash
-<benchmark command>
+make dlq
+go run ./cmd/tqctl dlq --limit 100
+go run ./cmd/tqctl dlq --json | jq '.[] | {id: .task.id, reason: .reason, attempts: .attempts}'
+
+# from inside a Kubernetes deployment
+kubectl -n taskqueue exec deploy/scheduler -- tqctl dlq --config /etc/taskqueue/config.yaml
+
+# straight from Redis, if you prefer
+redis-cli XRANGE tq:stream:dead - + COUNT 10
+redis-cli XLEN tq:stream:dead
 ```
 
-The completed implementation will document the exact commands and configuration files here.
+The benchmark harness also writes
+`results/<run>/dead_letters/<scheduler>_<workload>_rep<N>.json` whenever an
+experiment produced any.
 
----
-
-# Local Kubernetes Deployment
-
-The project supports local deployment using `kind`.
+### Testing the recovery path
 
 ```bash
-kind create cluster --name task-queue
+go run ./cmd/worker --fail-before-ack-rate 0.3     # 30% of attempts abandoned
+make bench-failure                                 # matrix with 20% failures
 ```
 
-Workers can then be deployed and scaled independently.
+Setting `recovery.min_idle` is a real trade-off, not a value to minimise: too
+short and healthy slow tasks get duplicated; too long and genuine failures take
+a long time to recover. It must exceed your longest expected task duration.
 
-Example:
+---
+
+## Metrics
+
+Scheduler on `:9101/metrics`, workers on `:9102/metrics`, both also serving
+`/healthz` and `/readyz`.
+
+The only dynamic label is `tenant`, from a small configured set. **Task IDs,
+attempt IDs and worker names are never used as labels.** Constant labels
+`component` and `scheduler` identify the process and the active policy. A
+process exposes only the metrics it can produce, so nothing is reported as
+permanently zero, and every tenant series is pre-created at zero so a starved
+tenant is visible rather than missing.
+
+Headline metrics:
+
+| Metric | Type | Measures |
+| --- | --- | --- |
+| `tq_queue_wait_seconds` | histogram | submission to start of execution |
+| `tq_task_latency_seconds` | histogram | submission to terminal completion |
+| `tq_task_exec_seconds` | histogram | measured execution time |
+| `tq_tasks_completed_total{tenant}` | counter | throughput |
+| `tq_deadline_missed_total{tenant}` | counter | deadline misses |
+| `tq_pending_tasks` | gauge | queue depth |
+| `tq_max_observed_wait_seconds` | gauge | **starvation indicator** |
+| `tq_worker_busy_seconds_total` / `tq_worker_slot_seconds_total` | counters | utilisation |
+| `tq_tenant_service_seconds_total{tenant}` | counter | **the `x` vector of Jain's index** |
+| `tq_task_retries_total` / `tq_tasks_dead_lettered_total` | counters | failure handling |
+| `tq_duplicate_completions_total` | counter | duplicate delivery, correctly suppressed |
+
+Full reference, including PromQL examples: [docs/metrics.md](docs/metrics.md).
+
+---
+
+## Benchmark methodology
+
+Each of the 16 cells runs in its **own Redis key namespace**
+(`bench-<run id>-<scheduler>-<workload>-r<rep>`), reset before and deleted
+after. Every CSV row also repeats the full run identity. Mixing results from
+different runs is therefore not possible by accident.
+
+For one experiment the harness starts a scheduler, a recovery loop and N workers
+in-process, waits for readiness, replays the seeded workload with correct arrival
+pacing, polls until every task is terminal or the timeout expires, shuts
+everything down, and reads the task-level records back from the results stream.
+
+### Load level matters
+
+A scheduler can only matter when a queue exists. Service capacity is
+approximately `workers x concurrency / mean_exec_seconds`. Both shipped profiles
+target a sustained overload of about **1.25x** capacity, and set
+`max_in_flight` to the total slot count so the backlog stays in the scheduler's
+pending set. If all four schedulers give you identical numbers, the run was
+under-loaded.
+
+### Statistics
+
+- **Percentiles** use linear interpolation between the two closest ranks, the
+  same definition numpy and pandas use, so the Go and Python numbers agree.
+- **Throughput** is `completed / makespan`, where makespan spans the earliest
+  submission to the latest completion, so tear-down time does not deflate it.
+- **Deadline miss rate** is over completed tasks; finishing exactly on the
+  deadline is a hit; dead-lettered tasks are excluded and reported separately.
+- **Utilisation** is `busy_slot_seconds / (slots x experiment_duration)`.
+
+### Jain's fairness index
+
+```
+J(x) = (sum(x))^2 / (n * sum(x^2))
+```
+
+**`x` is completed service seconds per tenant.** Tenants that received no
+service are included as zeros — dropping them would report perfect fairness for
+a queue that served exactly one tenant, which is the very failure the index
+exists to catch. `J` lies in `[1/n, 1]`: 1 when all tenants received identical
+service, `1/n` when one tenant took everything. An all-zero vector is reported
+as 1 by convention, an empty vector as NaN. The same index over completed task
+counts is reported as `jain_fairness_count`, because the two diverge when
+tenants submit tasks of very different sizes.
+
+### Reproducibility, and its limits
+
+For a given seed and workload configuration, the generated task sequence is
+**byte-identical** on any machine: same IDs, tenants, arrival offsets, durations,
+priorities and deadline slacks. Every random value comes from one seeded
+`math/rand` source consumed in a fixed order per task, and
+`TestSameSeedProducesIdenticalSequence` asserts it for all four workload types.
+Repetition *i* uses seed `base_seed + i`.
+
+**Timing is not reproducible.** Latency, throughput and utilisation depend on
+machine speed, Redis round-trip time and background load. So:
+
+- Report repetitions, not single runs; `--repetitions 5` is a sensible minimum.
+  The plotting script shows means with standard-deviation error bars and warns
+  explicitly when there is only one repetition.
+- Check `producer_max_lag_s`. If it is a large fraction of observed latencies,
+  the load generator was the bottleneck, not the queue.
+- Do not compare across machines, or across runs with different worker counts,
+  concurrency or `max_in_flight`. All of these are recorded in every aggregate
+  row precisely so mismatches are visible.
+- A timed-out experiment is written with `timed_out=true` and describes a
+  truncated run; do not compare it against completed ones.
+
+Full detail: [docs/experiments.md](docs/experiments.md).
+
+---
+
+## Result directory layout
+
+```
+results/
+└── <run id>/
+    ├── aggregate.csv        one row per scheduler x workload x repetition
+    ├── tenants.csv          one row per tenant per experiment
+    ├── manifest.json        full config, seeds and every experiment summary
+    ├── raw/
+    │   └── <scheduler>_<workload>_rep<N>.csv     one row per completed task
+    ├── dead_letters/
+    │   └── <scheduler>_<workload>_rep<N>.json    only when non-empty
+    └── plots/               produced by scripts/plot_results.py
+        ├── latency_percentiles.{png,svg}
+        ├── latency_tail_ratio.{png,svg}
+        ├── throughput.{png,svg}
+        ├── deadline_miss_rate.{png,svg}
+        ├── jain_fairness.{png,svg}
+        ├── starvation_max_wait.{png,svg}
+        ├── worker_utilization.{png,svg}
+        ├── tenant_latency_skew.{png,svg}
+        ├── priority_starvation.{png,svg}
+        └── summary_table.{csv,md}
+```
+
+Generated results are not committed. The single exception is
+`results/example/`, a deliberately tiny trimmed run kept so the CSV schemas and
+chart style are visible without running anything — see
+[results/README.md](results/README.md). Its numbers are an illustration of the
+output format, **not** a result to cite.
+
+---
+
+## How to interpret the results
+
+**Tail latency.** Compare `latency_p99_s` against `latency_p50_s`; the
+`latency_tail_ratio` chart plots that directly. A policy that improves the
+median by deferring some population usually pays in the tail. Strict priority is
+the clearest case: best p50, worst p99.
+
+**Starvation.** Read `wait_max_s` and `priority_starvation.png`, which plots p95
+latency against priority level. Under strict priority, low-priority tasks should
+show visibly worse latency and the gap should widen with load. FIFO and WFQ
+should show no priority gradient at all, since neither reads the priority field.
+`tq_max_observed_wait_seconds` is the live equivalent.
+
+**Deadline compliance.** EDF should have the lowest miss rate while most
+deadlines are still achievable, and degrade sharply under heavy overload. If EDF
+is not winning, check whether the run was under-loaded (nobody misses) or
+catastrophically overloaded (everybody misses). Always read the miss rate
+together with the dead-letter count: a run cannot look good by discarding work.
+
+**Fairness.** Read `jain_fairness_service` **together with**
+`tenant_latency_skew.png`, and understand why. Jain's index over completed
+service is *demand-limited*: under the 90/3/3/2/2 skew, tenants B–E only submit
+a few percent of the work, so no scheduler can give them a large share of
+service, and every policy reports a similar index near `1/n`. That is a property
+of the workload, not a failure of the scheduler.
+
+What actually distinguishes the policies under skew is **per-tenant latency**. A
+work-conserving fair queue protects a small tenant's latency even when it cannot
+raise its share. In the shipped example run, small-tenant p95 latency is around
+0.07 s under WFQ versus 0.35–0.8 s under FIFO, EDF and priority, while all four
+report a Jain index near 0.24. Report both numbers; either alone is misleading.
+
+**Throughput.** Expect all four to be close. Work-conserving schedulers do not
+change how much work gets done, only who waits. A large throughput gap usually
+means a configuration problem — a timed-out experiment, a dispatch bottleneck,
+an under-loaded run — not a scheduling insight.
+
+### Example output shape
+
+From `results/example/plots/summary_table.md` — 150 tasks, one repetition, on a
+laptop. **Illustrative only; not a result to cite.**
+
+| workload | scheduler | p50 s | p95 s | p99 s | max wait s | tasks/s | deadline miss | Jain |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| uniform | fifo | 0.162 | 0.263 | 0.276 | 0.226 | 147.4 | 0.000 | 0.987 |
+| uniform | priority | 0.065 | 0.435 | 0.460 | 0.423 | 147.9 | 0.020 | 0.987 |
+| uniform | edf | 0.136 | 0.328 | 0.350 | 0.309 | 148.2 | 0.000 | 0.987 |
+| uniform | wfq | 0.158 | 0.293 | 0.314 | 0.266 | 147.4 | 0.000 | 0.987 |
+
+Note the shape rather than the values: priority halves the median and roughly
+doubles the tail and the maximum wait, which is the starvation trade-off made
+visible.
+
+---
+
+## Project layout
+
+```
+.
+├── cmd/
+│   ├── producer/       workload generation and submission
+│   ├── scheduler/      central scheduling and recovery
+│   ├── worker/         task execution
+│   ├── benchmark/      the experiment matrix
+│   └── tqctl/          live state and dead-letter inspection
+├── internal/
+│   ├── broker/         all Redis access, including the atomic Lua scripts
+│   ├── cli/            shared flags, logging and signal handling
+│   ├── config/         YAML loading, defaults and startup validation
+│   ├── domain/         Task, Result, DeadLetter
+│   ├── scheduler/      engine, policy registry
+│   │   ├── policy/     the Policy interface, ordering key, in-memory queue
+│   │   ├── fifo/  priority/  edf/  wfq/
+│   ├── worker/         execution slots, failure injection, graceful shutdown
+│   ├── metrics/        Prometheus instrumentation
+│   ├── recovery/       XAUTOCLAIM redelivery, retries and dead-lettering
+│   ├── workload/       reproducible generation and paced submission
+│   └── bench/          experiment runner, statistics, CSV writers
+├── configs/            runnable configurations, fully commented
+├── experiments/        quick, full and failure-injection profiles
+├── scripts/            plot_results.py, kind-up.sh, kind-down.sh
+├── deploy/
+│   ├── docker/         multi-stage Dockerfile, Prometheus config
+│   └── kubernetes/     base manifests and a WFQ overlay
+├── results/            benchmark output (only results/example is committed)
+├── docs/               architecture, experiment methodology, metrics
+├── docker-compose.yml
+├── Makefile
+└── go.mod
+```
+
+---
+
+## Testing
+
+| Layer | What it covers |
+| --- | --- |
+| Scheduling policies | FIFO ordering; priority ordering, deterministic tie-breaking, band packing, absence of ageing; EDF ordering and tie-breaking; WFQ virtual-finish ordering, weighted service distribution, dominant-tenant protection, inability to bank credit, state round-trip across restart |
+| Ordering equivalence | `Key.Less` matches Redis sorted-set semantics; an integration test asserts that Redis dispatch order equals the in-memory policy order |
+| Workload | Byte-identical regeneration by seed for all four types; monotonic arrivals; uniform spacing; multi-tenant skew; heavy-tailed short median with a long tail; bursty concentration |
+| Statistics | Jain's index against known values, the `1/n` bound, zero-service tenants, negatives and empty input; percentile interpolation; deadline-miss counting including the exactly-on-deadline case |
+| Configuration | Defaults validate; partial documents get defaults; durations require units; unknown fields are rejected; twelve specific validation failures; every shipped config file loads |
+| Metrics | Scheduler and worker expose disjoint instrument sets; unregistered instruments are safe to record on; starved tenants appear as zeros; the max-wait gauge never decreases; the endpoint serves metrics and both probes |
+| Domain | JSON round-trips, validation, derived latency and deadline logic |
+| Redis integration | Full ingress-to-results flow; atomic dispatch loses nothing; `max_in_flight` enforcement; idempotent completion under duplicate delivery; idempotent admission; retry counting through to dead-lettering with metadata; `XAUTOCLAIM` reclaim; scheduler state persistence; namespace reset |
+| End-to-end | The benchmark harness completes every task and writes well-formed CSVs; a worker abandoning 100% of attempts dead-letters everything with correct attempt counts; with 35% intermittent failures every task still reaches a terminal state and no task is recorded twice |
 
 ```bash
-kubectl scale deployment task-worker --replicas=4
+make test               # unit only, no external services, race detector on
+make test-integration   # requires Redis
+make verify             # format, vet, unit, integration
+make cover-all          # combined statement coverage over internal/
 ```
 
-This demonstrates how the queue and worker model supports horizontal scaling.
+Combined unit and integration coverage of `internal/` is **80.5%** of
+statements. The uncovered remainder is mostly flag wiring in `internal/cli` and
+process assembly in `cmd/`, which the container and benchmark smoke jobs in CI
+exercise end to end instead.
+
+Unit and integration tests are separated by the `integration` build tag and by
+distinct Make targets. CI runs formatting, vet, `go mod tidy` drift, unit tests
+with the race detector, integration tests against a real Redis 7 service
+container, a full 16-experiment benchmark smoke run with plot generation and
+completeness assertions, a container image build, and manifest rendering.
 
 ---
 
-# Results
+## Known limitations
 
-Experimental results will be added after the full benchmark suite has been executed.
+1. **Simulated execution.** Workers sleep rather than compute. Utilisation is
+   slot occupancy, not CPU, and there are no cache, memory or I/O effects.
+2. **WFQ knows exact task cost.** Real schedulers must estimate it. These
+   results are an upper bound on WFQ's achievable fairness.
+3. **Non-preemptive, whole-task granularity.** Fairness is approximate over
+   horizons shorter than the largest task.
+4. **Single scheduler process.** Scheduling throughput is bounded by one process
+   and one Redis instance. That bounds the scale at which these results apply.
+5. **Single-node Redis.** No cluster support, no failover. The Lua scripts
+   declare all their keys but have not been validated against Redis Cluster
+   key-slot constraints.
+6. **At-least-once only.** Duplicate execution is expected; only completion
+   recording is idempotent.
+7. **Deadline misses are computed over completed tasks**, so the dead-letter
+   count must always be read alongside them.
+8. **Timing is not reproducible**, only the workload is. Repetitions and
+   reported variance are the mitigation, not a fix.
+9. **Jain's index is demand-limited under skew** and must be read together with
+   per-tenant latency.
+10. **The HPA needs metrics-server**, which a bare kind cluster does not install.
+    Without it the autoscaler reports unknown and leaves the replica count
+    alone; manual scaling still works.
 
-The repository will report actual measured values only.
+## Reasonable future work
 
-Example result format:
+- Ageing or lottery scheduling as a starvation-free alternative to strict
+  priority, measured with the same harness.
+- WF2Q or deficit round robin, to quantify what SCFQ's coarser virtual-time
+  advance actually costs.
+- Cost estimation for WFQ from historical durations, to measure the fairness
+  lost to estimation error.
+- A tenant-sharded scheduler to lift the single-writer bound, and a measurement
+  of the fairness cost of partitioning.
+- Real task bodies alongside the simulated ones, to check how far the
+  sleep-based conclusions transfer.
+- Latency-aware autoscaling driven by `tq_pending_tasks` and
+  `tq_longest_pending_wait_seconds` rather than CPU.
+- A Grafana dashboard. Grafana is deliberately absent from the Compose stack
+  rather than shipped unconfigured.
 
-| Scheduler | Workload | p50 | p95 | p99 | Deadline Miss Rate | Throughput | Fairness |
-| --------- | -------- | --: | --: | --: | -----------------: | ---------: | -------: |
-| FIFO      | Uniform  | TBD | TBD | TBD |                TBD |        TBD |      TBD |
-| Priority  | Uniform  | TBD | TBD | TBD |                TBD |        TBD |      TBD |
-| EDF       | Uniform  | TBD | TBD | TBD |                TBD |        TBD |      TBD |
-| WFQ       | Uniform  | TBD | TBD | TBD |                TBD |        TBD |      TBD |
+## Documentation
 
-**No performance improvement claims should be made until supported by reproducible benchmark results.**
+- [docs/architecture.md](docs/architecture.md) — components, data flow, atomicity, persisted state
+- [docs/experiments.md](docs/experiments.md) — methodology, load sizing, metric definitions, caveats
+- [docs/metrics.md](docs/metrics.md) — full metrics reference with PromQL examples
+- [results/README.md](results/README.md) — output layout and the committed example
 
----
+## License
 
-# Design Decisions
-
-## Why Redis Streams?
-
-Redis Streams provides useful task-processing primitives such as:
-
-* Consumer groups
-* Task acknowledgement
-* Pending message tracking
-
-This allows the project to focus engineering effort on scheduling and experimentation.
-
----
-
-## Why Not Build a Custom Broker?
-
-The research and engineering focus is scheduling policy.
-
-Building a message broker would increase scope without contributing directly to the central experimental question.
-
----
-
-## Why Simulate Task Execution?
-
-Using controlled sleep durations allows:
-
-* Reproducible task sizes
-* Controlled heavy-tailed workloads
-* Direct comparison between schedulers
-* Reduced application-specific noise
-
-The queue can later be extended with real task types.
-
----
-
-## Why At-Least-Once Instead of Exactly-Once?
-
-Exactly-once processing is expensive and difficult to guarantee in distributed systems.
-
-A more practical design is:
-
-```text
-At-least-once delivery
-        +
-Idempotent task handlers
-        =
-Practical failure-tolerant processing
-```
-
----
-
-# Roadmap
-
-* [ ] End-to-end FIFO task execution
-* [ ] Redis Streams consumer groups
-* [ ] Worker acknowledgements
-* [ ] Visibility timeout recovery
-* [ ] Retry handling
-* [ ] Dead-letter queue
-* [ ] Scheduler interface
-* [ ] Priority scheduler
-* [ ] EDF scheduler
-* [ ] Weighted Fair Queuing scheduler
-* [ ] Prometheus instrumentation
-* [ ] Reproducible workload generator
-* [ ] Uniform workload
-* [ ] Bursty workload
-* [ ] Heavy-tailed workload
-* [ ] Multi-tenant workload
-* [ ] Automated benchmark harness
-* [ ] CSV result generation
-* [ ] Automated plots
-* [ ] Full 16-experiment benchmark suite
-* [ ] Local Kubernetes deployment
-* [ ] Demo video
-* [ ] Technical report / paper
-
----
-
-# Research Direction
-
-A potential paper framing is:
-
-> **An Empirical Comparison of Scheduling Policies in Distributed Task Queues Under Realistic Workload Distributions**
-
-The intended contribution is empirical rather than claiming a novel scheduling algorithm.
-
-The study compares established policies under controlled conditions and evaluates trade-offs between:
-
-* Tail latency
-* Deadline compliance
-* Throughput
-* Fairness
-* Starvation
-
----
-
-# Status
-
-**Active Development**
-
-This repository is being developed incrementally. Features marked as planned or unchecked in the roadmap are not yet implemented.
-
----
-
-# License
-
-To be added.
-
-# Author
-
-Built as a systems and distributed computing project focused on task scheduling, queueing behavior, reproducible benchmarking, and Kubernetes-based deployment.
+MIT. See [LICENSE](LICENSE).
