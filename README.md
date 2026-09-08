@@ -833,8 +833,19 @@ go run ./cmd/benchmark --config experiments/full.yaml \
   --workloads uniform --repetitions 25 \
   --workers 4 --concurrency 4 --run-id uniform-25rep
 
-make plots RUN=heavy-25rep && make plots RUN=stable-25rep && make plots RUN=uniform-25rep
+# combine the three 25-repetition runs into one directory and chart the matrix
+make merge OUT=final-25rep RUNS="uniform-25rep stable-25rep heavy-25rep"
+make plots RUN=final-25rep
 ```
+
+The matrix was filled in across three invocations because the workloads needed
+different repetition counts. `scripts/merge_runs.py` combines them for analysis
+and refuses to do so unless the runs agree on every configuration field that
+affects results, or if any scheduler/workload/repetition cell appears twice.
+Each row keeps the `run_id` of the run that produced it, so provenance survives
+into the merged CSVs, and the merged manifest records it as an assembled view
+rather than a single benchmark invocation. The charts referenced below come
+from that merged directory.
 
 Environment: macOS 26.6 on an Apple M5 (10 cores), Redis 8.10.1 on localhost,
 4 worker processes x 4 slots = 16 slots, `max_in_flight=16`, arrivals at 400/s
@@ -1037,8 +1048,26 @@ arrivals and skewed tenants both average out over 4000 tasks, but a Pareto tail
 does not. Strict priority's p50 is the one metric that wants more repetitions
 everywhere.
 
-Charts for this run are in `results/full-5rep/plots/`. That directory is not
-committed; regenerate it with the command above.
+Charts are written to `results/final-25rep/plots/` as PNG and SVG:
+
+| chart | shows |
+| --- | --- |
+| `latency_percentiles` | p50/p95/p99 by scheduler and workload |
+| `latency_tail_ratio` | p99 divided by p50 — tail amplification |
+| `throughput` | completed tasks per second |
+| `deadline_miss_rate` | fraction finishing late |
+| `jain_fairness` | Jain's index, with the `1/n` floor marked |
+| `starvation_max_wait` | longest and p99 queue wait |
+| `worker_utilization` | busy slot-seconds over available |
+| `tenant_latency_skew` | per-tenant p95 under the 90/3/3/2/2 skew |
+| `priority_starvation` | p95 latency by priority level |
+| `summary_table.{csv,md}` | the headline numbers as a table |
+
+At 25 repetitions every chart carries standard-deviation error bars, and they
+make the variance story visible directly: the `heavy_tailed` bars are wide while
+`uniform`, `bursty` and `multi_tenant` are tight.
+
+Result directories are not committed; regenerate them with the commands above.
 
 ---
 

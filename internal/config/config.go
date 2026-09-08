@@ -15,116 +15,116 @@ import (
 
 // Config is the top-level configuration document.
 type Config struct {
-	Redis     Redis     `yaml:"redis"`
-	Streams   Streams   `yaml:"streams"`
-	Scheduler Scheduler `yaml:"scheduler"`
-	Worker    Worker    `yaml:"worker"`
-	Recovery  Recovery  `yaml:"recovery"`
-	Workload  Workload  `yaml:"workload"`
-	Log       Log       `yaml:"log"`
+	Redis     Redis     `yaml:"redis" json:"redis"`
+	Streams   Streams   `yaml:"streams" json:"streams"`
+	Scheduler Scheduler `yaml:"scheduler" json:"scheduler"`
+	Worker    Worker    `yaml:"worker" json:"worker"`
+	Recovery  Recovery  `yaml:"recovery" json:"recovery"`
+	Workload  Workload  `yaml:"workload" json:"workload"`
+	Log       Log       `yaml:"log" json:"log"`
 }
 
 // Redis holds broker connection settings.
 type Redis struct {
-	Addr         string   `yaml:"addr"`
-	Password     string   `yaml:"password"`
-	DB           int      `yaml:"db"`
-	DialTimeout  Duration `yaml:"dial_timeout"`
-	ReadTimeout  Duration `yaml:"read_timeout"`
-	WriteTimeout Duration `yaml:"write_timeout"`
-	PoolSize     int      `yaml:"pool_size"`
+	Addr         string   `yaml:"addr" json:"addr"`
+	Password     string   `yaml:"password" json:"password"`
+	DB           int      `yaml:"db" json:"db"`
+	DialTimeout  Duration `yaml:"dial_timeout" json:"dial_timeout"`
+	ReadTimeout  Duration `yaml:"read_timeout" json:"read_timeout"`
+	WriteTimeout Duration `yaml:"write_timeout" json:"write_timeout"`
+	PoolSize     int      `yaml:"pool_size" json:"pool_size"`
 }
 
 // Streams holds the Redis key and stream names. Every name is configurable and
 // all of them are prefixed by Namespace, which lets independent experiments
 // share one Redis instance without ever mixing state.
 type Streams struct {
-	Namespace        string `yaml:"namespace"`
-	IngressStream    string `yaml:"ingress_stream"`
-	ExecStream       string `yaml:"exec_stream"`
-	ResultsStream    string `yaml:"results_stream"`
-	DeadLetterStream string `yaml:"dead_letter_stream"`
-	SchedulerGroup   string `yaml:"scheduler_group"`
-	WorkerGroup      string `yaml:"worker_group"`
+	Namespace        string `yaml:"namespace" json:"namespace"`
+	IngressStream    string `yaml:"ingress_stream" json:"ingress_stream"`
+	ExecStream       string `yaml:"exec_stream" json:"exec_stream"`
+	ResultsStream    string `yaml:"results_stream" json:"results_stream"`
+	DeadLetterStream string `yaml:"dead_letter_stream" json:"dead_letter_stream"`
+	SchedulerGroup   string `yaml:"scheduler_group" json:"scheduler_group"`
+	WorkerGroup      string `yaml:"worker_group" json:"worker_group"`
 	// MaxLen approximately caps ingress and exec stream length. Zero disables
 	// trimming, which is what experiments want so that nothing is lost.
-	MaxLen int64 `yaml:"max_len"`
+	MaxLen int64 `yaml:"max_len" json:"max_len"`
 }
 
 // Scheduler configures the central scheduling process.
 type Scheduler struct {
 	// Policy selects the scheduling algorithm: fifo, priority, edf or wfq.
-	Policy string `yaml:"policy"`
+	Policy string `yaml:"policy" json:"policy"`
 	// IngestBatch is how many ingress entries are admitted per read.
-	IngestBatch int64 `yaml:"ingest_batch"`
+	IngestBatch int64 `yaml:"ingest_batch" json:"ingest_batch"`
 	// IngestBlock is how long a scheduler blocks waiting for ingress entries.
-	IngestBlock Duration `yaml:"ingest_block"`
+	IngestBlock Duration `yaml:"ingest_block" json:"ingest_block"`
 	// DispatchBatch is how many pending tasks are dispatched per loop pass.
-	DispatchBatch int `yaml:"dispatch_batch"`
+	DispatchBatch int `yaml:"dispatch_batch" json:"dispatch_batch"`
 	// IdleSleep is the back-off applied when there is nothing to dispatch. It
 	// keeps the dispatch loop from becoming a busy loop.
-	IdleSleep Duration `yaml:"idle_sleep"`
+	IdleSleep Duration `yaml:"idle_sleep" json:"idle_sleep"`
 	// MaxInFlight caps tasks dispatched but not yet acknowledged. Zero means
 	// unlimited. A finite value keeps the scheduling decision meaningful by
 	// stopping the exec stream from becoming the real queue.
-	MaxInFlight int `yaml:"max_in_flight"`
+	MaxInFlight int `yaml:"max_in_flight" json:"max_in_flight"`
 	// MetricsAddr is the listen address for the Prometheus endpoint.
-	MetricsAddr string `yaml:"metrics_addr"`
+	MetricsAddr string `yaml:"metrics_addr" json:"metrics_addr"`
 	// TenantWeights are the WFQ weights per tenant.
-	TenantWeights map[string]float64 `yaml:"tenant_weights"`
+	TenantWeights map[string]float64 `yaml:"tenant_weights" json:"tenant_weights"`
 	// DefaultTenantWeight applies to tenants absent from TenantWeights.
-	DefaultTenantWeight float64 `yaml:"default_tenant_weight"`
+	DefaultTenantWeight float64 `yaml:"default_tenant_weight" json:"default_tenant_weight"`
 	// StateFlushInterval is how often policy state is persisted to Redis.
-	StateFlushInterval Duration `yaml:"state_flush_interval"`
+	StateFlushInterval Duration `yaml:"state_flush_interval" json:"state_flush_interval"`
 }
 
 // Worker configures a worker process.
 type Worker struct {
 	// Name identifies the consumer inside the worker consumer group. Empty
 	// means "derive from hostname and PID".
-	Name string `yaml:"name"`
+	Name string `yaml:"name" json:"name"`
 	// Concurrency is the number of tasks executed in parallel per process.
-	Concurrency int `yaml:"concurrency"`
+	Concurrency int `yaml:"concurrency" json:"concurrency"`
 	// Block is how long XREADGROUP waits for new work before looping.
-	Block Duration `yaml:"block"`
+	Block Duration `yaml:"block" json:"block"`
 	// MetricsAddr is the listen address for the Prometheus endpoint.
-	MetricsAddr string `yaml:"metrics_addr"`
+	MetricsAddr string `yaml:"metrics_addr" json:"metrics_addr"`
 	// FailBeforeAckRate is the probability that a worker abandons a task after
 	// executing it and before acknowledging, simulating a crash. Used to
 	// exercise the recovery path. Range [0,1].
-	FailBeforeAckRate float64 `yaml:"fail_before_ack_rate"`
+	FailBeforeAckRate float64 `yaml:"fail_before_ack_rate" json:"fail_before_ack_rate"`
 	// FailRate is the probability that a task reports an application error.
 	// Failed tasks are retried through the same recovery path. Range [0,1].
-	FailRate float64 `yaml:"fail_rate"`
+	FailRate float64 `yaml:"fail_rate" json:"fail_rate"`
 	// FailSeed makes injected failures reproducible. Zero derives a seed from
 	// the worker name.
-	FailSeed int64 `yaml:"fail_seed"`
+	FailSeed int64 `yaml:"fail_seed" json:"fail_seed"`
 	// ShutdownGrace bounds how long graceful shutdown waits for in-flight work.
-	ShutdownGrace Duration `yaml:"shutdown_grace"`
+	ShutdownGrace Duration `yaml:"shutdown_grace" json:"shutdown_grace"`
 }
 
 // Recovery configures the redelivery loop.
 type Recovery struct {
 	// Enabled turns the recovery loop on. It runs inside the scheduler process.
-	Enabled bool `yaml:"enabled"`
+	Enabled bool `yaml:"enabled" json:"enabled"`
 	// Interval is how often XAUTOCLAIM is run.
-	Interval Duration `yaml:"interval"`
+	Interval Duration `yaml:"interval" json:"interval"`
 	// MinIdle is how long a pending exec-stream entry must be untouched before
 	// it is considered lost. This is the visibility timeout.
-	MinIdle Duration `yaml:"min_idle"`
+	MinIdle Duration `yaml:"min_idle" json:"min_idle"`
 	// Batch is the maximum number of entries reclaimed per pass.
-	Batch int64 `yaml:"batch"`
+	Batch int64 `yaml:"batch" json:"batch"`
 	// MaxRetries is the default retry budget applied to tasks that do not carry
 	// their own.
-	MaxRetries int `yaml:"max_retries"`
+	MaxRetries int `yaml:"max_retries" json:"max_retries"`
 }
 
 // Log configures structured logging.
 type Log struct {
 	// Level is one of debug, info, warn, error.
-	Level string `yaml:"level"`
+	Level string `yaml:"level" json:"level"`
 	// Format is "text" or "json".
-	Format string `yaml:"format"`
+	Format string `yaml:"format" json:"format"`
 }
 
 // Load reads a YAML configuration file, applies defaults and validates it.

@@ -278,6 +278,12 @@ plots: ## Generate charts: make plots RUN=<run id> (defaults to the newest run)
 	@test -x $(VENV_PY) || { echo "run 'make python-deps' first"; exit 1; }
 	$(VENV_PY) scripts/plot_results.py --results-dir=$(RESULTS_DIR) $(if $(RUN),--run=$(RUN),)
 
+.PHONY: merge
+merge: ## Combine runs into one analysable directory: make merge OUT=final RUNS="a b c"
+	@test -n "$(RUNS)" || { echo 'set RUNS="run1 run2 ..."'; exit 1; }
+	@test -x $(VENV_PY) || { echo "run 'make python-deps' first"; exit 1; }
+	$(VENV_PY) scripts/merge_runs.py --results-dir=$(RESULTS_DIR) --out=$(or $(OUT),merged) $(RUNS)
+
 .PHONY: report
 report: bench-quick plots ## Run the quick matrix and then plot it
 

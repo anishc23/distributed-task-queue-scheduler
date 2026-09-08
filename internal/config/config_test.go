@@ -1,6 +1,7 @@
 package config_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -172,5 +173,72 @@ func TestShippedConfigsAreValid(t *testing.T) {
 				t.Fatalf("shipped config %s does not validate: %v", path, err)
 			}
 		})
+	}
+}
+
+// The benchmark manifest embeds the whole configuration as JSON. It is a
+// reproducibility artefact, so its field names must match the YAML the run was
+// configured from rather than Go's struct field names, and durations must stay
+// human-readable.
+func TestConfigJSONMatchesYAMLFieldNames(t *testing.T) {
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	body := string(b)
+
+	for _, want := range []string{
+		`"redis"`, `"streams"`, `"scheduler"`, `"worker"`, `"recovery"`, `"workload"`, `"log"`,
+		`"max_in_flight"`, `"tenant_weights"`, `"default_tenant_weight"`,
+		`"fail_before_ack_rate"`, `"arrival_rate_per_sec"`, `"skew_tenants"`,
+		`"exec_multiplier"`, `"heavy_tail"`, `"min_ms"`, `"max_ms"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("manifest JSON is missing the snake_case key %s", want)
+		}
+	}
+	for _, bad := range []string{
+		`"MaxInFlight"`, `"TenantWeights"`, `"ArrivalRatePerSec"`, `"HeavyTail"`,
+		`"Redis"`, `"Workload"`, `"MinMillis"`,
+	} {
+		if strings.Contains(body, bad) {
+			t.Errorf("manifest JSON leaks the Go field name %s", bad)
+		}
+	}
+
+	// Durations must be strings with units, not raw nanosecond counts.
+	if !strings.Contains(body, `"idle_sleep":"2ms"`) {
+		t.Errorf("durations should serialise with explicit units, got: %s", body)
+	}
+	if strings.Contains(body, `"idle_sleep":2000000`) {
+		t.Error("durations must not serialise as raw nanosecond counts")
+	}
+}
+
+func TestConfigJSONRoundTrips(t *testing.T) {
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	b, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back config.Config
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.Scheduler.IdleSleep != cfg.Scheduler.IdleSleep {
+		t.Fatalf("idle_sleep did not round-trip: %s vs %s", back.Scheduler.IdleSleep, cfg.Scheduler.IdleSleep)
+	}
+	if back.Recovery.MinIdle != cfg.Recovery.MinIdle {
+		t.Fatalf("min_idle did not round-trip: %s vs %s", back.Recovery.MinIdle, cfg.Recovery.MinIdle)
+	}
+	if err := back.Validate(); err != nil {
+		t.Fatalf("a config that round-tripped through JSON must still validate: %v", err)
 	}
 }

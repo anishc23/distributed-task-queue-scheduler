@@ -55,6 +55,23 @@ Because it is 150 tasks with a single repetition, the numbers in
 `results/example/` are an illustration of the output format, **not** a result to
 cite. Use `make bench-full REPETITIONS=5` for anything reportable.
 
+## Merging runs
+
+When a matrix is filled in across several invocations — for example when one
+workload needs more repetitions than the others — combine them for analysis:
+
+```bash
+make merge OUT=final-25rep RUNS="uniform-25rep stable-25rep heavy-25rep"
+make plots RUN=final-25rep
+```
+
+`scripts/merge_runs.py` refuses to merge runs that disagree on any configuration
+field affecting results, and refuses to merge runs that cover the same
+scheduler/workload/repetition cell twice, since averaging a duplicated cell is
+exactly the mixing the harness is designed to prevent. Merged rows keep the
+`run_id` of the run that produced them, and the merged `manifest.json` is marked
+`"assembled": true` with each source run recorded.
+
 ## Regenerating
 
 ```bash

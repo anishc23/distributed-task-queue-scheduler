@@ -34,43 +34,43 @@ func ValidWorkload(name string) bool {
 // Workload describes a reproducible synthetic workload.
 type Workload struct {
 	// Type is one of uniform, bursty, heavy_tailed, multi_tenant.
-	Type string `yaml:"type"`
+	Type string `yaml:"type" json:"type"`
 	// Seed fixes the pseudo-random stream. The same seed and the same workload
 	// configuration always produce byte-identical task sequences.
-	Seed int64 `yaml:"seed"`
+	Seed int64 `yaml:"seed" json:"seed"`
 	// Count is the total number of tasks generated. The workload is finite so
 	// benchmarks terminate deterministically.
-	Count int `yaml:"count"`
+	Count int `yaml:"count" json:"count"`
 	// IDPrefix prefixes generated task IDs.
-	IDPrefix string `yaml:"id_prefix"`
+	IDPrefix string `yaml:"id_prefix" json:"id_prefix"`
 	// ArrivalRatePerSec is the mean arrival rate used by uniform,
 	// heavy_tailed and multi_tenant workloads, in tasks per second.
-	ArrivalRatePerSec float64 `yaml:"arrival_rate_per_sec"`
+	ArrivalRatePerSec float64 `yaml:"arrival_rate_per_sec" json:"arrival_rate_per_sec"`
 	// MaxRetries is written into every generated task.
-	MaxRetries int `yaml:"max_retries"`
+	MaxRetries int `yaml:"max_retries" json:"max_retries"`
 
-	Exec     ExecSpec      `yaml:"exec"`
-	Priority PrioritySpec  `yaml:"priority"`
-	Deadline DeadlineSpec  `yaml:"deadline"`
-	Tenants  []TenantShare `yaml:"tenants"`
+	Exec     ExecSpec      `yaml:"exec" json:"exec"`
+	Priority PrioritySpec  `yaml:"priority" json:"priority"`
+	Deadline DeadlineSpec  `yaml:"deadline" json:"deadline"`
+	Tenants  []TenantShare `yaml:"tenants" json:"tenants"`
 	// SkewTenants replaces Tenants when Type is multi_tenant. It defaults to the
 	// documented 90/3/3/2/2 skew used to study noisy-neighbour behaviour.
-	SkewTenants []TenantShare `yaml:"skew_tenants"`
-	Burst       BurstSpec     `yaml:"burst"`
-	HeavyTail   HeavyTailSpec `yaml:"heavy_tail"`
+	SkewTenants []TenantShare `yaml:"skew_tenants" json:"skew_tenants"`
+	Burst       BurstSpec     `yaml:"burst" json:"burst"`
+	HeavyTail   HeavyTailSpec `yaml:"heavy_tail" json:"heavy_tail"`
 }
 
 // ExecSpec bounds the simulated execution duration for non-heavy-tailed
 // workloads. Durations are sampled uniformly from [MinMillis, MaxMillis].
 type ExecSpec struct {
-	MinMillis int64 `yaml:"min_ms"`
-	MaxMillis int64 `yaml:"max_ms"`
+	MinMillis int64 `yaml:"min_ms" json:"min_ms"`
+	MaxMillis int64 `yaml:"max_ms" json:"max_ms"`
 }
 
 // PrioritySpec gives the relative frequency of each priority level. Index i is
 // the weight of priority i, so higher indexes are more important.
 type PrioritySpec struct {
-	Weights []float64 `yaml:"weights"`
+	Weights []float64 `yaml:"weights" json:"weights"`
 }
 
 // DeadlineSpec derives a per-task relative deadline:
@@ -80,25 +80,25 @@ type PrioritySpec struct {
 // Tying part of the slack to the task's own duration keeps large tasks from
 // being unconditionally doomed under EDF.
 type DeadlineSpec struct {
-	BaseMillis     int64   `yaml:"base_ms"`
-	ExecMultiplier float64 `yaml:"exec_multiplier"`
-	JitterMillis   int64   `yaml:"jitter_ms"`
+	BaseMillis     int64   `yaml:"base_ms" json:"base_ms"`
+	ExecMultiplier float64 `yaml:"exec_multiplier" json:"exec_multiplier"`
+	JitterMillis   int64   `yaml:"jitter_ms" json:"jitter_ms"`
 }
 
 // TenantShare is the probability that a generated task belongs to a tenant.
 type TenantShare struct {
-	ID    string  `yaml:"id"`
-	Share float64 `yaml:"share"`
+	ID    string  `yaml:"id" json:"id"`
+	Share float64 `yaml:"share" json:"share"`
 }
 
 // BurstSpec configures the bursty workload: Poisson arrivals at BaseRatePerSec
 // with periodic windows of BurstDuration at BurstRatePerSec, repeating every
 // BurstPeriod.
 type BurstSpec struct {
-	BaseRatePerSec  float64  `yaml:"base_rate_per_sec"`
-	BurstRatePerSec float64  `yaml:"burst_rate_per_sec"`
-	BurstDuration   Duration `yaml:"burst_duration"`
-	BurstPeriod     Duration `yaml:"burst_period"`
+	BaseRatePerSec  float64  `yaml:"base_rate_per_sec" json:"base_rate_per_sec"`
+	BurstRatePerSec float64  `yaml:"burst_rate_per_sec" json:"burst_rate_per_sec"`
+	BurstDuration   Duration `yaml:"burst_duration" json:"burst_duration"`
+	BurstPeriod     Duration `yaml:"burst_period" json:"burst_period"`
 }
 
 // HeavyTailSpec configures Pareto-distributed execution durations:
@@ -108,9 +108,9 @@ type BurstSpec struct {
 // Smaller alpha means a heavier tail. alpha <= 1 has infinite mean, so the
 // default stays above 1 and the clamp bounds the worst case regardless.
 type HeavyTailSpec struct {
-	MinMillis int64   `yaml:"min_ms"`
-	MaxMillis int64   `yaml:"max_ms"`
-	Alpha     float64 `yaml:"alpha"`
+	MinMillis int64   `yaml:"min_ms" json:"min_ms"`
+	MaxMillis int64   `yaml:"max_ms" json:"max_ms"`
+	Alpha     float64 `yaml:"alpha" json:"alpha"`
 }
 
 func (w *Workload) validate() error {
