@@ -136,16 +136,33 @@ will produce the same *workload* but not the same *measurements*.
 
 Consequences for interpreting results:
 
-- Report repetitions, not single runs. `--repetitions 5` is a reasonable
-  minimum for `uniform`, `bursty` and `multi_tenant`; the plotting script shows
-  the mean with standard-deviation error bars and explicitly warns when there is
-  only one repetition. **`heavy_tailed` needs far more** — around 20 to 25.
-  Measured against a 25-repetition baseline, its 5-repetition estimates were
-  biased 8–22% in a consistent direction, and one 95% confidence interval (EDF
-  throughput, 241.6 ± 4.4 tasks/s) excluded the better estimate of 257.6
-  entirely. Scheduler *rankings* were stable at 5 repetitions; magnitudes were
-  not. With Pareto durations a run's outcome turns on where the few multi-second
-  tasks land, so small samples can be tight and wrong at the same time.
+- Report repetitions, not single runs, and pick the count per workload. The
+  plotting script shows the mean with standard-deviation error bars and warns
+  explicitly when there is only one repetition. Measured against 25-repetition
+  baselines:
+
+  | workload | 5 repetitions is | median shift 5 → 25 |
+  | --- | --- | ---: |
+  | `bursty` | sufficient | 0.13% |
+  | `multi_tenant` | sufficient | 0.26% |
+  | `heavy_tailed` | **not sufficient**, use 20–25 | 8.42% |
+
+  `uniform` has not been re-run at 25; its variance profile resembles `bursty`,
+  so 5 is probably fine, but that is an expectation rather than a measurement.
+
+  The distinguishing property is the task-duration distribution, not the arrival
+  pattern: bursty arrivals average out over 4000 tasks, a Pareto tail does not.
+  For `heavy_tailed`, 5-repetition estimates were biased in a consistent
+  direction, one 95% interval (EDF throughput, 241.6 ± 4.4 tasks/s) excluded the
+  better estimate of 257.6 entirely, and one qualitative conclusion flipped.
+  Scheduler *rankings* were stable at 5 repetitions on every workload; magnitudes
+  were not.
+
+  Do not use interval coverage to judge convergence. Across the three re-run
+  workloads the count of 5-repetition intervals that missed the 25-repetition
+  mean was 1, 0 and 1 — no signal — because a low-variance metric produces an
+  interval so narrow that a negligible shift escapes it. Compare the size of the
+  shift in the point estimate instead.
 - Check `producer_max_lag_s` in `aggregate.csv`. If it is a significant
   fraction of the observed latencies, the load generator, not the queue, was the
   bottleneck and the run should be repeated with a lower arrival rate or on a
