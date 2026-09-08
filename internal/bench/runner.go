@@ -22,6 +22,17 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// SchedulerNone names the control arm: no central scheduler at all. Workers
+// consume the ingress stream directly through their own consumer group, so
+// dispatch order is arrival order and nothing ranks anything.
+//
+// This is the honest baseline for the project's central claim. It produces the
+// same execution order as fifo, so comparing the two isolates the cost of
+// centralised scheduling - an extra Redis round trip per task through the
+// pending set - from the effect of the ordering policy itself. Comparing it
+// against priority, edf or wfq shows what that cost buys.
+const SchedulerNone = "none"
+
 // Options configures a benchmark matrix run.
 type Options struct {
 	// Base is the configuration every experiment starts from. Per-experiment
@@ -112,8 +123,12 @@ func NewRunner(opts Options) (*Runner, error) {
 		return nil, fmt.Errorf("benchmark: worker concurrency must be > 0, got %d", opts.WorkerConcurrency)
 	}
 	for _, s := range opts.Schedulers {
+		if s == SchedulerNone {
+			continue
+		}
 		if !scheduler.Valid(s) {
-			return nil, fmt.Errorf("benchmark: unknown scheduler %q, expected one of %v", s, scheduler.Names())
+			return nil, fmt.Errorf("benchmark: unknown scheduler %q, expected one of %v or %q",
+				s, scheduler.Names(), SchedulerNone)
 		}
 	}
 	for _, w := range opts.Workloads {
@@ -254,6 +269,16 @@ func (r *Runner) experimentConfig(id RunIdentity) *config.Config {
 		id.RunID, id.Scheduler, id.Workload, loadSuffix(id.OfferedLoad, "-"), id.Repetition)
 	cfg.Scheduler = r.opts.Base.Scheduler
 	cfg.Scheduler.Policy = id.Scheduler
+	if id.Scheduler == SchedulerNone {
+		// Workers read the ingress stream directly. Pointing the execution
+		// stream at the ingress stream means the worker consumer group, the
+		// acknowledgement path and the recovery loop all operate on it
+		// unchanged, so the control differs from the real system in exactly one
+		// respect: nothing ranks or dispatches.
+		cfg.Streams.ExecStream = cfg.Streams.IngressStream
+		// Any policy would be unused; fifo is the cheapest to construct.
+		cfg.Scheduler.Policy = "fifo"
+	}
 	cfg.Scheduler.MaxInFlight = r.effectiveMaxInFlight()
 	cfg.Scheduler.MetricsAddr = ""
 	cfg.Worker = r.opts.Base.Worker
@@ -338,16 +363,20 @@ func (r *Runner) runOne(ctx context.Context, id RunIdentity, runDir string) (Sum
 	schedMetrics := metrics.New(metrics.Options{Component: metrics.ComponentScheduler, Scheduler: id.Scheduler})
 	schedMetrics.PreloadTenants(cfg.Workload.TenantIDs())
 
-	engine, err := scheduler.NewEngine(scheduler.EngineOptions{
-		Broker:   br,
-		Policy:   pol,
-		Config:   cfg.Scheduler,
-		Logger:   log,
-		Metrics:  schedMetrics,
-		Consumer: "bench-scheduler",
-	})
-	if err != nil {
-		return Summary{}, err
+	// The control arm runs no scheduler at all.
+	var engine *scheduler.Engine
+	if id.Scheduler != SchedulerNone {
+		engine, err = scheduler.NewEngine(scheduler.EngineOptions{
+			Broker:   br,
+			Policy:   pol,
+			Config:   cfg.Scheduler,
+			Logger:   log,
+			Metrics:  schedMetrics,
+			Consumer: "bench-scheduler",
+		})
+		if err != nil {
+			return Summary{}, err
+		}
 	}
 
 	recLoop, err := recovery.New(recovery.Options{
@@ -389,7 +418,9 @@ func (r *Runner) runOne(ctx context.Context, id RunIdentity, runDir string) (Sum
 			}
 		}()
 	}
-	runComponent("scheduler", engine.Run)
+	if engine != nil {
+		runComponent("scheduler", engine.Run)
+	}
 	runComponent("recovery", recLoop.Run)
 	for _, w := range workers {
 		runComponent("worker", w.Run)
@@ -496,11 +527,12 @@ func loadSuffix(requestedLoad float64, sep string) string {
 	return sep + "l" + strings.ReplaceAll(fmt.Sprintf("%.2f", requestedLoad), ".", "p")
 }
 
-// waitReady blocks until every component reports readiness.
+// waitReady blocks until every component reports readiness. A nil engine is the
+// control arm, which has no scheduler to wait for.
 func waitReady(ctx context.Context, engine *scheduler.Engine, workers []*worker.Worker, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for {
-		ready := engine.Ready()
+		ready := engine == nil || engine.Ready()
 		for _, w := range workers {
 			ready = ready && w.Ready()
 		}

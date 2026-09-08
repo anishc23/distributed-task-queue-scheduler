@@ -31,7 +31,11 @@ func main() {
 	var common cli.CommonFlags
 	common.Register(fs)
 
-	schedulersFlag := fs.String("schedulers", strings.Join(scheduler.Names(), ","), "comma-separated scheduling policies to test")
+	schedulersFlag := fs.String("schedulers", strings.Join(scheduler.Names(), ","),
+		"comma-separated scheduling policies to test.\n"+
+			"\tThe pseudo-policy \"none\" is a control arm: no central scheduler, workers\n"+
+			"\tconsume the ingress stream directly in arrival order. Comparing it against\n"+
+			"\tfifo isolates the cost of centralised scheduling from the ordering policy.")
 	workloadsFlag := fs.String("workloads", strings.Join(config.WorkloadTypes(), ","), "comma-separated workload types to test")
 	repetitions := fs.Int("repetitions", 1, "repetitions per matrix cell; repetition i uses seed base_seed+i")
 	count := fs.Int("count", 0, "tasks per experiment (overrides workload.count)")
