@@ -250,8 +250,8 @@ func (r *Runner) effectiveMaxInFlight() int {
 func (r *Runner) experimentConfig(id RunIdentity) *config.Config {
 	cfg := *r.opts.Base
 	cfg.Streams = r.opts.Base.Streams
-	cfg.Streams.Namespace = fmt.Sprintf("bench-%s-%s-%s-l%s-r%d",
-		id.RunID, id.Scheduler, id.Workload, loadTag(id.OfferedLoad), id.Repetition)
+	cfg.Streams.Namespace = fmt.Sprintf("bench-%s-%s-%s%s-r%d",
+		id.RunID, id.Scheduler, id.Workload, loadSuffix(id.OfferedLoad, "-"), id.Repetition)
 	cfg.Scheduler = r.opts.Base.Scheduler
 	cfg.Scheduler.Policy = id.Scheduler
 	cfg.Scheduler.MaxInFlight = r.effectiveMaxInFlight()
@@ -468,7 +468,11 @@ func (r *Runner) runOne(ctx context.Context, id RunIdentity, runDir string) (Sum
 		MeanExecMillis:       plan.MeanExecMS,
 	})
 
-	base := fmt.Sprintf("%s_%s_l%s_rep%d", id.Scheduler, id.Workload, loadTag(offered), id.Repetition)
+	// The load is part of the filename only during a sweep, where it is what
+	// distinguishes one file from another. A single-load run keeps the
+	// documented <scheduler>_<workload>_rep<N>.csv layout.
+	base := fmt.Sprintf("%s_%s%s_rep%d",
+		id.Scheduler, id.Workload, loadSuffix(id.OfferedLoad, "_"), id.Repetition)
 	rawID := id
 	rawID.OfferedLoad = offered
 	if err := WriteRawCSV(filepath.Join(runDir, "raw", base+".csv"), rawID, results); err != nil {
@@ -482,9 +486,14 @@ func (r *Runner) runOne(ctx context.Context, id RunIdentity, runDir string) (Sum
 	return summary, nil
 }
 
-// loadTag renders an offered load for use in a file or namespace name.
-func loadTag(load float64) string {
-	return strings.ReplaceAll(fmt.Sprintf("%.2f", load), ".", "p")
+// loadSuffix renders a requested offered load for use in a file or namespace
+// name. It is empty when no load sweep was requested, so that a plain run keeps
+// the documented naming and a sweep cannot have two experiments collide.
+func loadSuffix(requestedLoad float64, sep string) string {
+	if requestedLoad <= 0 {
+		return ""
+	}
+	return sep + "l" + strings.ReplaceAll(fmt.Sprintf("%.2f", requestedLoad), ".", "p")
 }
 
 // waitReady blocks until every component reports readiness.

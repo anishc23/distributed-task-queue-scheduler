@@ -10,6 +10,7 @@ results/
     ├── manifest.json               # full configuration, seeds and every summary
     ├── raw/
     │   └── <scheduler>_<workload>_rep<N>.csv    # one row per completed task
+    │       # a --loads sweep inserts the load: <scheduler>_<workload>_l1p25_rep<N>.csv
     ├── dead_letters/
     │   └── <scheduler>_<workload>_rep<N>.json   # written only when non-empty
     └── plots/                      # created by scripts/plot_results.py

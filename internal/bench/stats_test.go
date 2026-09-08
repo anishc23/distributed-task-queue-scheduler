@@ -2,6 +2,7 @@ package bench_test
 
 import (
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -169,5 +170,38 @@ func TestSummariseSeconds(t *testing.T) {
 	empty := bench.SummariseSeconds(nil)
 	if empty.Count != 0 {
 		t.Fatalf("empty summary count = %d, want 0", empty.Count)
+	}
+}
+
+// A plain run must keep the documented <scheduler>_<workload>_rep<N> layout,
+// while a sweep must tag every file with its load or experiments at different
+// loads would overwrite each other. This rule is easy to break accidentally
+// when adding a dimension, and doing so silently destroys results.
+func TestLoadSuffixOnlyAppearsDuringASweep(t *testing.T) {
+	if got := bench.LoadSuffix(0, "_"); got != "" {
+		t.Fatalf("no sweep requested should produce no suffix, got %q", got)
+	}
+	if got := bench.LoadSuffix(-1, "_"); got != "" {
+		t.Fatalf("a non-positive load should produce no suffix, got %q", got)
+	}
+	if got := bench.LoadSuffix(1.25, "_"); got != "_l1p25" {
+		t.Fatalf("file suffix = %q, want %q", got, "_l1p25")
+	}
+	if got := bench.LoadSuffix(1.25, "-"); got != "-l1p25" {
+		t.Fatalf("namespace suffix = %q, want %q", got, "-l1p25")
+	}
+	// Distinct loads must produce distinct suffixes, including ones that differ
+	// only after the decimal point.
+	seen := map[string]bool{}
+	for _, l := range []float64{0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0} {
+		s := bench.LoadSuffix(l, "_")
+		if seen[s] {
+			t.Fatalf("load %g produced a duplicate suffix %q", l, s)
+		}
+		seen[s] = true
+	}
+	// No dots, which would be awkward in a filename.
+	if strings.Contains(bench.LoadSuffix(1.5, "_"), ".") {
+		t.Fatal("suffix must not contain a dot")
 	}
 }
