@@ -137,8 +137,15 @@ will produce the same *workload* but not the same *measurements*.
 Consequences for interpreting results:
 
 - Report repetitions, not single runs. `--repetitions 5` is a reasonable
-  minimum; the plotting script shows the mean with standard-deviation error bars
-  and explicitly warns when there is only one repetition.
+  minimum for `uniform`, `bursty` and `multi_tenant`; the plotting script shows
+  the mean with standard-deviation error bars and explicitly warns when there is
+  only one repetition. **`heavy_tailed` needs far more** — around 20 to 25.
+  Measured against a 25-repetition baseline, its 5-repetition estimates were
+  biased 8–22% in a consistent direction, and one 95% confidence interval (EDF
+  throughput, 241.6 ± 4.4 tasks/s) excluded the better estimate of 257.6
+  entirely. Scheduler *rankings* were stable at 5 repetitions; magnitudes were
+  not. With Pareto durations a run's outcome turns on where the few multi-second
+  tasks land, so small samples can be tight and wrong at the same time.
 - Check `producer_max_lag_s` in `aggregate.csv`. If it is a significant
   fraction of the observed latencies, the load generator, not the queue, was the
   bottleneck and the run should be repeated with a lower arrival rate or on a

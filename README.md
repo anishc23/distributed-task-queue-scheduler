@@ -800,48 +800,64 @@ an under-loaded run — not a scheduling insight.
 
 ## Measured results
 
-A full run of the shipped `experiments/full.yaml` profile: **80 experiments**
-(16 cells x 5 repetitions), 4000 tasks each, 320,000 tasks total. Every
-experiment completed every task; none timed out, none were dead-lettered, and
-maximum producer lag was 14 ms, so the load generator was never the bottleneck.
+Two runs of the shipped `experiments/full.yaml` profile, 4000 tasks per
+experiment:
+
+- the full matrix at 5 repetitions — 80 experiments, 320,000 tasks;
+- `heavy_tailed` alone at **25 repetitions** — 100 experiments, 400,000 tasks,
+  because that workload's variance made 5 repetitions too few to trust (see
+  [Repetitions matter](#repetitions-matter) below).
+
+Every one of the 180 experiments completed every task. None timed out, none
+were dead-lettered, and maximum producer lag was 36 ms, so the load generator
+was never the bottleneck.
 
 ```bash
-make bench-full REPETITIONS=5 RUN=full-5rep && make plots RUN=full-5rep
+make bench-full REPETITIONS=5 RUN=full-5rep
+
+go run ./cmd/benchmark --config experiments/full.yaml \
+  --workloads heavy_tailed --repetitions 25 \
+  --workers 4 --concurrency 4 --run-id heavy-25rep
+
+make plots RUN=full-5rep && make plots RUN=heavy-25rep
 ```
 
 Environment: macOS 26.6 on an Apple M5 (10 cores), Redis 8.10.1 on localhost,
 4 worker processes x 4 slots = 16 slots, `max_in_flight=16`, arrivals at 400/s
-against a service capacity of ~320/s (≈1.25x offered load). Values are the mean
-of 5 repetitions, with standard deviation where it is material. **These numbers
-describe this machine under this configuration; do not port them elsewhere.**
+against a service capacity of ~320/s (≈1.25x offered load). Values are means
+across repetitions; the `reps` column says how many. **These numbers describe
+this machine under this configuration; do not port them elsewhere.**
 
-| workload | scheduler | p50 s | p99 s | max wait s | deadline miss | tasks/s | Jain |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| uniform | fifo | 1.505 | 2.946 | 2.927 | 0.794 | 308.1 | 0.999 |
-| uniform | priority | **0.148** | 4.562 | 4.559 | 0.463 | 307.6 | 0.999 |
-| uniform | edf | 1.496 | 3.012 | 3.099 | 0.792 | 307.8 | 0.999 |
-| uniform | wfq | 1.493 | 3.359 | 3.388 | 0.785 | 307.6 | 0.999 |
-| bursty | fifo | 3.223 | **6.234** | 6.255 | 0.943 | 308.6 | 0.999 |
-| bursty | priority | 1.895 | 7.511 | 7.546 | 0.707 | 307.7 | 0.999 |
-| bursty | edf | 3.156 | 6.276 | 6.342 | 0.937 | 308.5 | 0.999 |
-| bursty | wfq | 3.185 | 6.342 | 6.376 | 0.943 | 307.7 | 0.999 |
-| heavy_tailed | fifo | 0.964 | 1.843 | **1.799** | 0.578 | 270.8 | 0.984 |
-| heavy_tailed | priority | 0.116 | 2.908 | 2.900 | 0.397 | 270.3 | 0.984 |
-| heavy_tailed | edf | **0.029** | **1.387** | 9.849 | **0.001** | 241.6 | 0.984 |
-| heavy_tailed | wfq | 0.491 | 2.801 | 2.848 | 0.430 | 257.3 | 0.984 |
-| multi_tenant | fifo | 1.479 | 2.900 | 2.884 | 0.780 | 308.1 | 0.246 |
-| multi_tenant | priority | 0.120 | 4.446 | 4.442 | 0.453 | 307.9 | 0.246 |
-| multi_tenant | edf | 1.447 | 2.936 | 2.989 | 0.775 | 308.7 | 0.246 |
-| multi_tenant | wfq | 1.498 | 2.920 | 2.895 | **0.727** | 308.0 | 0.246 |
+| workload | scheduler | p50 s | p99 s | max wait s | deadline miss | tasks/s | Jain | reps |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| uniform | fifo | 1.505 | 2.946 | 2.927 | 0.794 | 308.1 | 0.999 | 5 |
+| uniform | priority | 0.148 | 4.562 | 4.559 | 0.463 | 307.6 | 0.999 | 5 |
+| uniform | edf | 1.496 | 3.012 | 3.099 | 0.792 | 307.8 | 0.999 | 5 |
+| uniform | wfq | 1.493 | 3.359 | 3.388 | 0.785 | 307.6 | 0.999 | 5 |
+| bursty | fifo | 3.223 | 6.234 | 6.255 | 0.943 | 308.6 | 0.999 | 5 |
+| bursty | priority | 1.895 | 7.511 | 7.546 | 0.707 | 307.7 | 0.999 | 5 |
+| bursty | edf | 3.156 | 6.276 | 6.342 | 0.937 | 308.5 | 0.999 | 5 |
+| bursty | wfq | 3.185 | 6.342 | 6.376 | 0.943 | 307.7 | 0.999 | 5 |
+| heavy_tailed | fifo | 0.749 | 1.686 | 1.613 | 0.482 | 282.7 | 0.979 | 25 |
+| heavy_tailed | priority | 0.096 | 2.685 | 2.681 | 0.343 | 281.7 | 0.979 | 25 |
+| heavy_tailed | edf | 0.031 | 1.271 | 6.163 | 0.001 | 257.6 | 0.979 | 25 |
+| heavy_tailed | wfq | 0.394 | 2.487 | 2.574 | 0.354 | 270.5 | 0.979 | 25 |
+| multi_tenant | fifo | 1.479 | 2.900 | 2.884 | 0.780 | 308.1 | 0.246 | 5 |
+| multi_tenant | priority | 0.120 | 4.446 | 4.442 | 0.453 | 307.9 | 0.246 | 5 |
+| multi_tenant | edf | 1.447 | 2.936 | 2.989 | 0.775 | 308.7 | 0.246 | 5 |
+| multi_tenant | wfq | 1.498 | 2.920 | 2.895 | 0.727 | 308.0 | 0.246 | 5 |
+
+`max wait s` is the mean across repetitions of each run's longest observed
+queue wait, not the single worst observation.
 
 ### What the run actually shows
 
 **Throughput is flat, as it should be.** All four policies land within 1% of
 each other (307–309 tasks/s) on three of four workloads. Work-conserving
 schedulers do not change how much work gets done, only who waits. The exception
-is `heavy_tailed`, where EDF drops to 242 tasks/s: deferring long tasks in
-favour of urgent short ones leaves slots idle at the end of the run while the
-deferred giants drain.
+is `heavy_tailed`, where EDF drops to 258 tasks/s against FIFO's 283 — about
+9% lower. Deferring long tasks in favour of urgent short ones leaves slots idle
+at the end of the run while the deferred giants drain.
 
 **Strict priority is a median/tail trade, and the numbers are stark.** On
 `uniform` it cuts p50 by 10x (1.505s → 0.148s) and pays for it with a 55%
@@ -863,15 +879,23 @@ measured. FIFO, EDF and WFQ show a flat 1.0x because none of them reads the
 priority field.
 
 **EDF nearly eliminates deadline misses, and starves the tail to do it.** On
-`heavy_tailed` its miss rate is 0.001 against FIFO's 0.578 — a ~500x
-improvement — with the best p50 (0.029s) and best p99 (1.387s) of the four.
-But its maximum wait is 9.85s, the worst in the entire matrix, and 15 tasks
-waited more than 5s. Those tasks are precisely the long ones (6000ms, 5148ms,
-3233ms), which under `deadline = base + exec*4 + jitter` carry the most distant
-deadlines. EDF defers exactly the work that can afford to be deferred, and every
-one of those starved tasks still made its deadline. The starvation is real and
-it is also, here, the correct decision — which is why max wait and miss rate
-must be read together.
+`heavy_tailed` its miss rate is 0.0008 against FIFO's 0.4819 — a **574x**
+improvement — with the best p50 (0.031s) and best p99 (1.271s) of the four. But
+its mean maximum wait is 6.16s, the worst in the matrix, and across 100,000
+tasks 59 waited more than 5s, the worst at 9.36s.
+
+Those starved tasks are precisely the long ones. Their median execution time is
+3338 ms against 17 ms for the task population as a whole — a 196x difference.
+Under `deadline = base + exec*4 + jitter`, a long task carries a distant
+deadline, so EDF defers exactly the work that can afford to be deferred. Most of
+it survives the deferral: 45 of the 59 still met their deadlines. But 14 did
+not, so the starvation is not free.
+
+Strict priority is an instructive contrast: it starves *more* tasks (816 waited
+over 5s) but less severely (worst 6.03s vs EDF's 9.36s). EDF starves few tasks
+hard; priority starves many tasks moderately. Max wait alone would rank EDF as
+the worse offender, and count-above-threshold would rank priority worse — which
+is why both are reported.
 
 **WFQ's fairness win does not show up in Jain's index.** Every scheduler
 reports 0.246 on `multi_tenant`, near the `1/n = 0.2` floor, because the index
@@ -899,13 +923,49 @@ everything is late regardless of policy, and p99 sits at 6.2–7.5s across the
 board. Under deep enough overload, scheduling stops being able to help; only
 priority still buys anything, and only by sacrificing its low-priority tail.
 
-Variance across the 5 repetitions was small on `uniform`, `bursty` and
-`multi_tenant` (standard deviations of 0.02–0.35s on p99). It was substantially
-larger on `heavy_tailed` — for example EDF's p99 was 1.387±0.424s and FIFO's
-deadline miss rate 0.578±0.246 — which is expected: a Pareto duration
-distribution means a single run's outcome depends heavily on where the few
-6-second tasks happen to land. Heavy-tailed cells need more repetitions than
-the others before their numbers should be trusted.
+### Repetitions matter
+
+Variance across repetitions was small on `uniform`, `bursty` and `multi_tenant`
+(standard deviations of 0.02–0.35s on p99). It was much larger on
+`heavy_tailed`, which is expected: with Pareto durations, a run's outcome
+depends heavily on where the handful of 6-second tasks happen to land. That is
+why `heavy_tailed` was re-run at 25 repetitions, and the comparison is worth
+reporting because it shows what 5 repetitions actually bought.
+
+| metric | scheduler | 5 reps | 25 reps | shift | CI |
+| --- | --- | ---: | ---: | ---: | ---: |
+| p50 s | fifo | 0.964 ± 0.439 | 0.749 ± 0.181 | −22.3% | 2.4x tighter |
+| p99 s | wfq | 2.801 ± 0.975 | 2.487 ± 0.366 | −11.2% | 2.7x tighter |
+| max wait s | edf | 7.451 ± 2.509 | 6.163 ± 0.742 | −17.3% | 3.4x tighter |
+| miss rate | fifo | 0.578 ± 0.216 | 0.482 ± 0.081 | −16.7% | 2.7x tighter |
+| throughput /s | edf | 241.6 ± 4.4 | 257.6 ± 10.9 | **+6.6%** | — |
+
+Values are means with 95% confidence half-widths.
+
+Three things stand out.
+
+**Every 5-repetition estimate was biased in the same direction** — latencies and
+miss rates too high, throughput too low, by 8–22%. Five draws from a heavy-tailed
+distribution happened to land on the unlucky side, and they landed there
+consistently rather than scattering.
+
+**One 5-repetition interval excluded the truth.** EDF's throughput read
+241.6 ± 4.4 tasks/s, an interval of [237, 246] that does not contain the
+25-repetition estimate of 257.6. The small sample was both wrong and confidently
+wrong: its apparent tightness came from five runs happening to agree, not from
+the underlying quantity being stable. It made EDF's throughput cost look worse
+than it is.
+
+**A conclusion changed.** At 5 repetitions, all 15 of EDF's starved tasks had met
+their deadlines, which read as "the starvation is free". At 25 repetitions, 14 of
+59 missed. The qualitative story — EDF defers long tasks with distant deadlines —
+survived; the claim that it costs nothing did not.
+
+None of the *orderings* changed: EDF still has the best p50, p99 and miss rate on
+this workload and the worst maximum wait; priority still has the worst p99. The
+rankings were robust at 5 repetitions. The magnitudes were not, and the
+throughput interval was actively misleading. For `heavy_tailed`, treat fewer than
+~20 repetitions as indicative only.
 
 Charts for this run are in `results/full-5rep/plots/`. That directory is not
 committed; regenerate it with the command above.
