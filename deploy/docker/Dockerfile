@@ -25,7 +25,8 @@ RUN go build -trimpath -ldflags="-s -w" -o /out/scheduler ./cmd/scheduler && \
     go build -trimpath -ldflags="-s -w" -o /out/worker    ./cmd/worker && \
     go build -trimpath -ldflags="-s -w" -o /out/producer  ./cmd/producer && \
     go build -trimpath -ldflags="-s -w" -o /out/benchmark ./cmd/benchmark && \
-    go build -trimpath -ldflags="-s -w" -o /out/tqctl     ./cmd/tqctl
+    go build -trimpath -ldflags="-s -w" -o /out/tqctl     ./cmd/tqctl && \
+    go build -trimpath -ldflags="-s -w" -o /out/schedbench ./cmd/schedbench
 
 # ---- runtime stage ---------------------------------------------------------
 FROM alpine:3.20
@@ -38,6 +39,7 @@ COPY --from=build /out/worker    /usr/local/bin/worker
 COPY --from=build /out/producer  /usr/local/bin/producer
 COPY --from=build /out/benchmark /usr/local/bin/benchmark
 COPY --from=build /out/tqctl     /usr/local/bin/tqctl
+COPY --from=build /out/schedbench /usr/local/bin/schedbench
 
 # Configuration files ship with the image so a container can run without a
 # mounted volume. Mount over /etc/taskqueue to override.

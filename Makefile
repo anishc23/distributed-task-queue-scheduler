@@ -61,6 +61,7 @@ build: ## Build every binary into ./bin
 	$(GO) build -trimpath -o $(BIN)/producer  ./cmd/producer
 	$(GO) build -trimpath -o $(BIN)/benchmark ./cmd/benchmark
 	$(GO) build -trimpath -o $(BIN)/tqctl     ./cmd/tqctl
+	$(GO) build -trimpath -o $(BIN)/schedbench ./cmd/schedbench
 	@echo "binaries in ./$(BIN)"
 
 .PHONY: tidy
@@ -283,6 +284,12 @@ merge: ## Combine runs into one analysable directory: make merge OUT=final RUNS=
 	@test -n "$(RUNS)" || { echo 'set RUNS="run1 run2 ..."'; exit 1; }
 	@test -x $(VENV_PY) || { echo "run 'make python-deps' first"; exit 1; }
 	$(VENV_PY) scripts/merge_runs.py --results-dir=$(RESULTS_DIR) --out=$(or $(OUT),merged) $(RUNS)
+
+.PHONY: ceiling
+ceiling: ## Measure the scheduler's own dispatch ceiling (no workers): make ceiling TASKS=20000
+	@$(MAKE) --no-print-directory redis-check
+	$(GO) run ./cmd/schedbench --redis-addr=$(REDIS_ADDR) --tasks=$(or $(TASKS),20000) \
+		--csv=$(RESULTS_DIR)/ceiling/ceiling.csv
 
 .PHONY: sweep
 sweep: ## Sweep offered load across the matrix: make sweep LOADS=0.5,1,1.5,2 REPETITIONS=3
