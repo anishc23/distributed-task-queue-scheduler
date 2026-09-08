@@ -284,6 +284,15 @@ merge: ## Combine runs into one analysable directory: make merge OUT=final RUNS=
 	@test -x $(VENV_PY) || { echo "run 'make python-deps' first"; exit 1; }
 	$(VENV_PY) scripts/merge_runs.py --results-dir=$(RESULTS_DIR) --out=$(or $(OUT),merged) $(RUNS)
 
+.PHONY: docs-charts
+docs-charts: ## Copy a run's charts into docs/images for the README: make docs-charts RUN=<id>
+	@test -n "$(RUN)" || { echo 'set RUN=<run id>, e.g. make docs-charts RUN=final-25rep'; exit 1; }
+	@test -d "$(RESULTS_DIR)/$(RUN)/plots" || { \
+		echo "$(RESULTS_DIR)/$(RUN)/plots does not exist; run 'make plots RUN=$(RUN)' first"; exit 1; }
+	@mkdir -p docs/images
+	cp $(RESULTS_DIR)/$(RUN)/plots/*.png docs/images/
+	@echo "copied $$(ls -1 $(RESULTS_DIR)/$(RUN)/plots/*.png | wc -l | tr -d ' ') charts from $(RUN) into docs/images/"
+
 .PHONY: report
 report: bench-quick plots ## Run the quick matrix and then plot it
 

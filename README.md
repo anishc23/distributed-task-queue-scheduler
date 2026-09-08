@@ -873,6 +873,12 @@ this machine under this configuration; do not port them elsewhere.**
 | multi_tenant | edf | 1.459 | 2.790 | 2.976 | 3.044 | 0.775 | 308.3 | 0.96 | 0.246 |
 | multi_tenant | wfq | 1.490 | 2.848 | 2.932 | 2.910 | 0.727 | 308.4 | 0.96 | 0.246 |
 
+![End-to-end latency by scheduler and workload](docs/images/latency_percentiles.png)
+
+*p50, p95 and p99 latency across the matrix. Error bars are one standard
+deviation across the 25 repetitions — note how much wider the heavy-tailed bars
+are than the other three workloads.*
+
 Every cell is the mean of **25 repetitions**. `max wait s` is the mean across
 repetitions of each run's longest observed queue wait, not the single worst
 observation; `util` is busy slot-seconds divided by available slot-seconds. This
@@ -903,6 +909,8 @@ mechanism explicit:
 | edf | 2.816 | 2.813 | 2.809 | 2.811 | 2.834 | 1.0x |
 | wfq | 2.954 | 2.953 | 2.947 | 2.941 | 2.967 | 1.0x |
 
+![p95 latency by priority level](docs/images/priority_starvation.png)
+
 p95 latency in seconds by priority level, `uniform`, 25 repetitions pooled
 (100,000 tasks per scheduler).
 Priority 0 is the lowest; the weights `[50,25,15,7,3]` make it the largest
@@ -924,6 +932,14 @@ deadline, so EDF defers exactly the work that can afford to be deferred. Most of
 it survives the deferral: 45 of the 59 still met their deadlines. But 14 did
 not, so the starvation is not free.
 
+![Deadline miss rate](docs/images/deadline_miss_rate.png)
+![Longest and p99 queue wait](docs/images/starvation_max_wait.png)
+
+*EDF trades the two against each other: near-zero deadline misses on
+`heavy_tailed`, and the worst maximum wait in the matrix — with by far the
+widest error bar, because that number depends on where a handful of 6-second
+tasks land.*
+
 Strict priority is an instructive contrast: it starves *more* tasks (816 waited
 over 5s) but less severely (worst 6.03s vs EDF's 9.36s). EDF starves few tasks
 hard; priority starves many tasks moderately. Max wait alone would rank EDF as
@@ -942,6 +958,8 @@ is where the difference lives:
 | priority | 4.253 | 4.220 | 4.220 | 4.203 | 4.123 | 0.99x |
 | edf | 2.791 | 2.768 | 2.733 | 2.751 | 2.765 | 0.99x |
 | **wfq** | 2.858 | **0.078** | **0.078** | **0.077** | **0.078** | **0.03x** |
+
+![Per-tenant p95 latency under skew](docs/images/tenant_latency_skew.png)
 
 p95 latency in seconds per tenant, `multi_tenant`, mean of 25 repetitions. WFQ
 gives the small tenants **36x lower p95 latency** (0.078s vs ~2.76s) while
@@ -1055,19 +1073,20 @@ arrivals and skewed tenants both average out over 4000 tasks, but a Pareto tail
 does not. Strict priority's p50 is the one metric that wants more repetitions
 everywhere.
 
-Charts are written to `results/final-25rep/plots/` as PNG and SVG:
+All nine charts are committed under [`docs/images/`](docs/images/) and are
+regenerated into `results/<run>/plots/` as PNG and SVG:
 
 | chart | shows |
 | --- | --- |
-| `latency_percentiles` | p50/p95/p99 by scheduler and workload |
-| `latency_tail_ratio` | p99 divided by p50 — tail amplification |
-| `throughput` | completed tasks per second |
-| `deadline_miss_rate` | fraction finishing late |
-| `jain_fairness` | Jain's index, with the `1/n` floor marked |
-| `starvation_max_wait` | longest and p99 queue wait |
-| `worker_utilization` | busy slot-seconds over available |
-| `tenant_latency_skew` | per-tenant p95 under the 90/3/3/2/2 skew |
-| `priority_starvation` | p95 latency by priority level |
+| [`latency_percentiles`](docs/images/latency_percentiles.png) | p50/p95/p99 by scheduler and workload |
+| [`latency_tail_ratio`](docs/images/latency_tail_ratio.png) | p99 divided by p50 — tail amplification |
+| [`throughput`](docs/images/throughput.png) | completed tasks per second |
+| [`deadline_miss_rate`](docs/images/deadline_miss_rate.png) | fraction finishing late |
+| [`jain_fairness`](docs/images/jain_fairness.png) | Jain's index, with the `1/n` floor marked |
+| [`starvation_max_wait`](docs/images/starvation_max_wait.png) | longest and p99 queue wait |
+| [`worker_utilization`](docs/images/worker_utilization.png) | busy slot-seconds over available |
+| [`tenant_latency_skew`](docs/images/tenant_latency_skew.png) | per-tenant p95 under the 90/3/3/2/2 skew |
+| [`priority_starvation`](docs/images/priority_starvation.png) | p95 latency by priority level |
 | `summary_table.{csv,md}` | the headline numbers as a table |
 
 At 25 repetitions every chart carries standard-deviation error bars, and they
@@ -1075,6 +1094,9 @@ make the variance story visible directly: the `heavy_tailed` bars are wide while
 `uniform`, `bursty` and `multi_tenant` are tight.
 
 Result directories are not committed; regenerate them with the commands above.
+The committed copies under `docs/images/` are refreshed with
+`make docs-charts RUN=final-25rep`, which fails rather than copying nothing if
+the run has not been plotted.
 
 ---
 
