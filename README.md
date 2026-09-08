@@ -452,10 +452,14 @@ Score is the absolute deadline in Unix milliseconds; ties break by submission
 time, then task ID. Tasks with no deadline sort after every task that has one.
 
 *Caveats.* EDF is optimal for uniprocessor scheduling only when the system is
-**not** overloaded. Under overload it degrades sharply, because it keeps
-preferring tasks that are already about to miss and misses them anyway while
-delaying tasks that could still have been met. The overload behaviour here is a
-measured result, not an assumption. EDF also ignores priority entirely.
+**not** overloaded, and classical theory warns it can degrade badly beyond that
+by preferring already-doomed tasks. **That pathology did not appear here.**
+Across a 0.5x to 3x load sweep EDF had the lowest deadline miss rate at every
+level, its advantage narrowing rather than inverting, because these deadlines
+are generous and scale with each task's own duration. What EDF does pay is
+starvation: its longest wait is several times FIFO's, since it defers precisely
+the large tasks whose deadlines are furthest away. EDF also ignores priority
+entirely.
 
 ### `wfq` — weighted fair queuing
 
@@ -772,11 +776,12 @@ show visibly worse latency and the gap should widen with load. FIFO and WFQ
 should show no priority gradient at all, since neither reads the priority field.
 `tq_max_observed_wait_seconds` is the live equivalent.
 
-**Deadline compliance.** EDF should have the lowest miss rate while most
-deadlines are still achievable, and degrade sharply under heavy overload. If EDF
-is not winning, check whether the run was under-loaded (nobody misses) or
-catastrophically overloaded (everybody misses). Always read the miss rate
-together with the dead-letter count: a run cannot look good by discarding work.
+**Deadline compliance.** EDF has the lowest miss rate at every load measured;
+its advantage shrinks as load rises but does not invert. If EDF is not winning,
+check whether the run was under-loaded (nobody misses) or so overloaded that
+everybody misses. Always read the miss rate together with the maximum wait,
+since EDF buys compliance with starvation, and with the dead-letter count, since
+a run cannot look good by discarding work.
 
 **Fairness.** Read `jain_fairness_service` **together with**
 `tenant_latency_skew.png`, and understand why. Jain's index over completed
@@ -973,6 +978,119 @@ if you only look at the fairness index.
 everything is late regardless of policy, and p99 sits at 6.2–7.5s across the
 board. Under deep enough overload, scheduling stops being able to help; only
 priority still buys anything, and only by sacrificing its low-priority tail.
+
+### How policy choice depends on load
+
+Every table above is measured at 1.25x capacity. That is one operating point,
+and on its own it cannot say whether a policy's advantage is general or an
+artefact of where the system happened to be sitting. Sweeping offered load from
+0.5x to 3x — 336 experiments, 1.34 million tasks — answers that, and the answer
+is more interesting than the single point.
+
+```bash
+make sweep RUN=sweep-loads REPETITIONS=3
+make sweep-plots RUN=sweep-loads
+```
+
+![p99 latency against offered load](docs/images/sweep_latency_p99.png)
+
+**Scheduling policy only matters in a narrow band around capacity.** The spread
+between the best and worst policy's p99 latency on the uniform workload:
+
+| offered load | 0.50x | 0.75x | 1.00x | 1.25x | 1.50x | 2.00x | 3.00x |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| p99 spread across policies | 0.1% | 0.3% | **93.1%** | 55.5% | 28.4% | 2.1% | 1.1% |
+
+Below capacity there is no queue, so every policy dispatches immediately and all
+four are identical to within measurement noise. Far above capacity the backlog
+dominates: the makespan is fixed by total work and p99 approaches it whatever
+order you choose. Policy is decisive only in between, peaking right at 1.0x.
+
+This is the single most useful thing the sweep says, and it is invisible from
+any one operating point. It also retroactively justifies the load sizing in
+`experiments/full.yaml`: at 1.25x the experiment sits inside the band where the
+policies actually differ.
+
+**EDF does not collapse under overload, contrary to what this README used to
+claim.** Deadline miss rate on the heavy-tailed workload:
+
+| offered load | 0.50x | 0.75x | 1.00x | 1.25x | 1.50x | 2.00x | 3.00x |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| fifo | 0.000 | 0.000 | 0.123 | 0.645 | 0.799 | 0.860 | 0.893 |
+| priority | 0.000 | 0.000 | 0.154 | 0.415 | 0.453 | 0.508 | 0.683 |
+| **edf** | 0.000 | 0.000 | **0.000** | **0.005** | **0.368** | **0.635** | **0.769** |
+| wfq | 0.000 | 0.000 | 0.088 | 0.507 | 0.690 | 0.798 | 0.864 |
+
+Classical theory warns that EDF degrades badly beyond capacity, because it keeps
+preferring tasks that are already doomed and misses them anyway while delaying
+tasks that were still achievable. I asserted that in three places in this
+repository before measuring it. **The data does not support it here.** EDF has
+the lowest miss rate at every load level tested; its advantage narrows from
+about 129x better than FIFO at 1.25x to 1.16x at 3x, but never inverts.
+
+The reason is that the classical pathology needs deadlines that are tight
+relative to service time, whereas these deadlines are generous and scale with
+each task's own duration (`base + exec*4 + jitter`), so a deferred long task
+usually still meets its own deadline. That makes this a property of the workload
+as much as of the policy, and a workload with tight absolute deadlines would
+likely reproduce the textbook failure. The claim has been corrected in the
+README, `docs/experiments.md` and the policy's own doc comment.
+
+**What EDF actually pays is starvation, at every load.** Longest queue wait on
+the heavy-tailed workload, in seconds:
+
+| offered load | 1.00x | 1.25x | 1.50x | 2.00x | 3.00x |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| fifo | 0.58 | 2.31 | 3.84 | 5.81 | 7.81 |
+| **edf** | **2.60** | **8.27** | **8.96** | **9.51** | **9.64** |
+
+EDF's worst-case wait is three to four times FIFO's and saturates near 9.6s.
+It defers exactly the large tasks whose deadlines are furthest away. Miss rate
+and maximum wait have to be read as a pair for this policy.
+
+![Deadline compliance against offered load](docs/images/sweep_deadline_miss.png)
+
+### How fast is the scheduler itself?
+
+The scheduler is a deliberate single-writer component, so its own capacity
+bounds the whole design. Every benchmark above is bounded by simulated work, not
+by the scheduler, so none of them answer this. `schedbench` removes the workers
+and drives the critical path directly:
+
+```bash
+make ceiling TASKS=20000
+```
+
+| stage | rate | note |
+| --- | ---: | --- |
+| dispatch, best case | 271,198 tasks/s | batch 256; atomic `ZPOPMIN`+`XADD` |
+| admission | 15,458 tasks/s | one Redis round trip per task |
+| **end to end** | **11,562 tasks/s** | both loops together — the real ceiling |
+
+**Dispatch is 18x faster than admission, so dispatch was never the constraint.**
+Dispatch amortises a whole batch over one Redis round trip; admission pays one
+round trip per task. Reporting the peak dispatch figure as "the" ceiling would
+overstate it by more than an order of magnitude, which is exactly the mistake
+the tool's first version made before it was corrected to report the slowest
+stage.
+
+Two consequences worth stating:
+
+**The scheduler can feed about 578 worker slots** at a 50 ms mean task, or
+roughly 145 four-slot worker processes, before it rather than the workers
+becomes the bottleneck. That is the quantitative answer to "is a central
+scheduler a problem?" for this design and this hardware.
+
+**Every experiment in this README ran the scheduler at about 3% of its
+capacity** — 308 tasks/s delivered against an 11,562 tasks/s ceiling. The
+scheduling comparisons are therefore measuring policy, not scheduler saturation,
+which is a validity check the project previously could not make.
+
+Batch size matters only up to a point: dispatch reaches 212k/s at batch 64 and
+271k/s at 256, but since admission caps the system at 15k/s, the shipped
+`dispatch_batch: 64` is comfortably past where it stops mattering. Policy choice
+costs almost nothing — WFQ's stateful per-tenant ranking admits at 15,304/s
+against FIFO's 15,581/s, a 1.8% difference.
 
 ### Repetitions matter
 

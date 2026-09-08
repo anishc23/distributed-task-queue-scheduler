@@ -354,16 +354,56 @@ func printResults(rs []result, meanExec float64) {
 	}
 	w.Flush()
 
-	best := result{}
+	// The ceiling is the slowest stage, not the fastest. Reporting peak dispatch
+	// as "the" ceiling would overstate it by more than an order of magnitude,
+	// because dispatch batches many tasks per Redis round trip while admission
+	// pays one round trip per task.
+	var peakDispatch, bestAdmit, engine result
 	for _, r := range rs {
-		if r.Phase == "dispatch" && r.RatePerS > best.RatePerS {
-			best = r
+		switch r.Phase {
+		case "dispatch":
+			if r.RatePerS > peakDispatch.RatePerS {
+				peakDispatch = r
+			}
+		case "admit":
+			if bestAdmit.RatePerS == 0 || r.RatePerS > bestAdmit.RatePerS {
+				bestAdmit = r
+			}
+		case "engine":
+			if engine.RatePerS == 0 || r.RatePerS > engine.RatePerS {
+				engine = r
+			}
 		}
 	}
-	if best.RatePerS > 0 {
-		fmt.Printf("\nPeak dispatch: %.0f tasks/s at batch %d (%s).\n", best.RatePerS, best.Batch, best.Policy)
-		fmt.Printf("At a %.0fms mean task, that keeps about %.0f worker slots busy before the\n", meanExec, best.SlotsFed)
-		fmt.Printf("scheduler rather than the workers becomes the bottleneck.\n")
+
+	binding := engine
+	label := "end-to-end engine"
+	if binding.RatePerS == 0 {
+		binding, label = bestAdmit, "admission"
+	}
+
+	fmt.Printf("\nStage rates (higher is better):\n")
+	if peakDispatch.RatePerS > 0 {
+		fmt.Printf("  dispatch, best case   %9.0f tasks/s  (batch %d)\n", peakDispatch.RatePerS, peakDispatch.Batch)
+	}
+	if bestAdmit.RatePerS > 0 {
+		fmt.Printf("  admission             %9.0f tasks/s  (one round trip per task)\n", bestAdmit.RatePerS)
+	}
+	if engine.RatePerS > 0 {
+		fmt.Printf("  end to end            %9.0f tasks/s  (both loops together)\n", engine.RatePerS)
+	}
+
+	if peakDispatch.RatePerS > 0 && bestAdmit.RatePerS > 0 {
+		fmt.Printf("\nDispatch is %.0fx faster than admission, so dispatch is not the constraint:\n",
+			peakDispatch.RatePerS/bestAdmit.RatePerS)
+		fmt.Printf("it amortises many tasks over one Redis round trip while admission pays one\n")
+		fmt.Printf("round trip per task.\n")
+	}
+	if binding.RatePerS > 0 {
+		fmt.Printf("\nCeiling: %.0f tasks/s, set by the %s stage.\n", binding.RatePerS, label)
+		fmt.Printf("At a %.0fms mean task that keeps about %.0f worker slots busy before the\n",
+			meanExec, binding.SlotsFed)
+		fmt.Printf("scheduler, rather than the workers, becomes the bottleneck.\n")
 	}
 }
 

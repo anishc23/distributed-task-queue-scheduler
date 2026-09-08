@@ -261,12 +261,16 @@ tasks should show visibly worse latency than high-priority ones, and the gap
 should widen with load. FIFO and WFQ should show no priority gradient at all,
 because neither reads the priority field.
 
-**Deadline compliance.** EDF should have the lowest `deadline_miss_rate` when
-the system can meet most deadlines. Under heavy overload EDF degrades sharply,
-because it keeps preferring tasks that are already about to miss and so misses
-them anyway while delaying tasks that could still have been met. If EDF is not
-winning on this metric, check whether the run was under-loaded (every policy
-misses nothing) or catastrophically overloaded (every policy misses everything).
+**Deadline compliance.** EDF has the lowest `deadline_miss_rate` at every
+offered load measured, from 0.5x to 3x capacity. Classical theory warns that EDF
+can degrade badly under overload by preferring already-doomed tasks; that did
+not appear here, because the deadlines this workload generates are generous and
+scale with each task's own duration, so a deferred long task usually still meets
+its deadline. What does happen is that EDF's advantage erodes as load grows:
+on the heavy-tailed workload it was roughly 129x better than FIFO at 1.25x load
+and only 1.16x better at 3x. If EDF is not winning on this metric, check whether
+the run was under-loaded (every policy misses nothing) or so overloaded that
+every policy misses nearly everything.
 
 **Fairness and isolation.** Read `jain_fairness_service` together with
 `tenant_latency_skew.png`, for the reason given above. WFQ should show small
