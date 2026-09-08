@@ -809,6 +809,7 @@ experiment:
 | `heavy-25rep` | `heavy_tailed`, 25 repetitions | 100 | 400,000 |
 | `stable-25rep` | `bursty` + `multi_tenant`, 25 repetitions | 200 | 800,000 |
 | `uniform-25rep` | `uniform`, 25 repetitions | 100 | 400,000 |
+| `final-25rep` | the three 25-repetition runs merged for analysis | 400 | — |
 
 **480 experiments, 1.92 million tasks.** Every one completed every task. None
 timed out, none were dead-lettered, and maximum producer lag across all four
@@ -853,27 +854,30 @@ against a service capacity of ~320/s (≈1.25x offered load). Values are means
 across repetitions; the `reps` column says how many. **These numbers describe
 this machine under this configuration; do not port them elsewhere.**
 
-| workload | scheduler | p50 s | p99 s | max wait s | deadline miss | tasks/s | Jain | reps |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| uniform | fifo | 1.486 | 2.917 | 2.900 | 0.791 | 308.8 | 0.999 | 25 |
-| uniform | priority | 0.109 | 4.491 | 4.492 | 0.462 | 308.3 | 0.999 | 25 |
-| uniform | edf | 1.483 | 2.992 | 3.069 | 0.788 | 308.3 | 0.999 | 25 |
-| uniform | wfq | 1.476 | 3.240 | 3.270 | 0.786 | 308.2 | 0.999 | 25 |
-| bursty | fifo | 3.216 | 6.245 | 6.273 | 0.943 | 308.9 | 0.999 | 25 |
-| bursty | priority | 1.705 | 7.538 | 7.561 | 0.704 | 308.1 | 0.999 | 25 |
-| bursty | edf | 3.158 | 6.306 | 6.389 | 0.937 | 308.1 | 0.999 | 25 |
-| bursty | wfq | 3.184 | 6.345 | 6.389 | 0.943 | 308.2 | 0.999 | 25 |
-| heavy_tailed | fifo | 0.749 | 1.686 | 1.613 | 0.482 | 282.7 | 0.979 | 25 |
-| heavy_tailed | priority | 0.096 | 2.685 | 2.681 | 0.343 | 281.7 | 0.979 | 25 |
-| heavy_tailed | edf | 0.031 | 1.271 | 6.163 | 0.001 | 257.6 | 0.979 | 25 |
-| heavy_tailed | wfq | 0.394 | 2.487 | 2.574 | 0.354 | 270.5 | 0.979 | 25 |
-| multi_tenant | fifo | 1.479 | 2.920 | 2.907 | 0.780 | 308.4 | 0.246 | 25 |
-| multi_tenant | priority | 0.105 | 4.462 | 4.467 | 0.457 | 308.4 | 0.246 | 25 |
-| multi_tenant | edf | 1.459 | 2.976 | 3.044 | 0.775 | 308.3 | 0.246 | 25 |
-| multi_tenant | wfq | 1.490 | 2.932 | 2.910 | 0.727 | 308.4 | 0.246 | 25 |
+| workload | scheduler | p50 s | p95 s | p99 s | max wait s | deadline miss | tasks/s | util | Jain |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| uniform | fifo | 1.486 | 2.796 | 2.917 | 2.900 | 0.791 | 308.8 | 0.96 | 0.999 |
+| uniform | priority | 0.109 | 4.299 | 4.491 | 4.492 | 0.462 | 308.3 | 0.96 | 0.999 |
+| uniform | edf | 1.483 | 2.814 | 2.992 | 3.069 | 0.788 | 308.3 | 0.96 | 0.999 |
+| uniform | wfq | 1.476 | 2.958 | 3.240 | 3.270 | 0.786 | 308.2 | 0.96 | 0.999 |
+| bursty | fifo | 3.216 | 5.872 | 6.245 | 6.273 | 0.943 | 308.9 | 0.96 | 0.999 |
+| bursty | priority | 1.705 | 7.118 | 7.538 | 7.561 | 0.704 | 308.1 | 0.96 | 0.999 |
+| bursty | edf | 3.158 | 5.877 | 6.306 | 6.389 | 0.937 | 308.1 | 0.96 | 0.999 |
+| bursty | wfq | 3.184 | 5.896 | 6.345 | 6.389 | 0.943 | 308.2 | 0.96 | 0.999 |
+| heavy_tailed | fifo | 0.749 | 1.553 | 1.686 | 1.613 | 0.482 | 282.7 | 0.80 | 0.979 |
+| heavy_tailed | priority | 0.096 | 2.524 | 2.685 | 2.681 | 0.343 | 281.7 | 0.80 | 0.979 |
+| heavy_tailed | edf | 0.031 | 0.322 | 1.271 | 6.163 | 0.001 | 257.6 | 0.73 | 0.979 |
+| heavy_tailed | wfq | 0.394 | 2.103 | 2.487 | 2.574 | 0.354 | 270.5 | 0.76 | 0.979 |
+| multi_tenant | fifo | 1.479 | 2.797 | 2.920 | 2.907 | 0.780 | 308.4 | 0.96 | 0.246 |
+| multi_tenant | priority | 0.105 | 4.252 | 4.462 | 4.467 | 0.457 | 308.4 | 0.96 | 0.246 |
+| multi_tenant | edf | 1.459 | 2.790 | 2.976 | 3.044 | 0.775 | 308.3 | 0.96 | 0.246 |
+| multi_tenant | wfq | 1.490 | 2.848 | 2.932 | 2.910 | 0.727 | 308.4 | 0.96 | 0.246 |
 
-`max wait s` is the mean across repetitions of each run's longest observed
-queue wait, not the single worst observation.
+Every cell is the mean of **25 repetitions**. `max wait s` is the mean across
+repetitions of each run's longest observed queue wait, not the single worst
+observation; `util` is busy slot-seconds divided by available slot-seconds. This
+table is generated as `results/final-25rep/plots/summary_table.{csv,md}` and can
+be regenerated with `make plots RUN=final-25rep`.
 
 ### What the run actually shows
 
@@ -881,8 +885,11 @@ queue wait, not the single worst observation.
 each other (308.1–308.9 tasks/s) on three of four workloads. Work-conserving
 schedulers do not change how much work gets done, only who waits. The exception
 is `heavy_tailed`, where EDF drops to 258 tasks/s against FIFO's 283 — about
-9% lower. Deferring long tasks in favour of urgent short ones leaves slots idle
-at the end of the run while the deferred giants drain.
+9% lower. The utilisation column corroborates the mechanism directly: every
+policy sits at 0.96 on the other three workloads, but on `heavy_tailed` EDF
+falls to 0.73 against FIFO's 0.80. Deferring long tasks in favour of urgent
+short ones leaves worker slots idle at the end of the run while the deferred
+giants drain, and the lost throughput is exactly that idle time.
 
 **Strict priority is a median/tail trade, and the numbers are stark.** On
 `uniform` it cuts p50 by 10x (1.505s → 0.148s) and pays for it with a 55%
