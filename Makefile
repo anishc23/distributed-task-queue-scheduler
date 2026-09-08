@@ -284,6 +284,19 @@ merge: ## Combine runs into one analysable directory: make merge OUT=final RUNS=
 	@test -x $(VENV_PY) || { echo "run 'make python-deps' first"; exit 1; }
 	$(VENV_PY) scripts/merge_runs.py --results-dir=$(RESULTS_DIR) --out=$(or $(OUT),merged) $(RUNS)
 
+.PHONY: sweep
+sweep: ## Sweep offered load across the matrix: make sweep LOADS=0.5,1,1.5,2 REPETITIONS=3
+	@$(MAKE) --no-print-directory redis-check
+	$(GO) run ./cmd/benchmark --config=$(RUN_CONFIG) --redis-addr=$(REDIS_ADDR) \
+		--loads=$(or $(LOADS),0.5,0.75,1.0,1.25,1.5,2.0,3.0) \
+		--repetitions=$(REPETITIONS) --workers=$(WORKERS) --concurrency=$(CONCURRENCY) \
+		--results-dir=$(RESULTS_DIR) $(if $(RUN),--run-id=$(RUN),)
+
+.PHONY: sweep-plots
+sweep-plots: ## Plot load curves from a sweep: make sweep-plots RUN=<run id>
+	@test -x $(VENV_PY) || { echo "run 'make python-deps' first"; exit 1; }
+	$(VENV_PY) scripts/plot_load_sweep.py --results-dir=$(RESULTS_DIR) $(if $(RUN),--run=$(RUN),)
+
 .PHONY: docs-charts
 docs-charts: ## Copy a run's charts into docs/images for the README: make docs-charts RUN=<id>
 	@test -n "$(RUN)" || { echo 'set RUN=<run id>, e.g. make docs-charts RUN=final-25rep'; exit 1; }
