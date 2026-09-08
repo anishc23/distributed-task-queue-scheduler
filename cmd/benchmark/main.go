@@ -14,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -36,6 +37,11 @@ func main() {
 	count := fs.Int("count", 0, "tasks per experiment (overrides workload.count)")
 	seed := fs.Int64("seed", -1, "base random seed (overrides workload.seed)")
 	rate := fs.Float64("rate", 0, "mean arrival rate in tasks per second (overrides workload.arrival_rate_per_sec)")
+	loads := fs.String("loads", "", "comma-separated offered-load multipliers to sweep, e.g. 0.5,1,1.5,2 .\n"+
+		"\tFor each value the workload's mean arrival rate is set to that multiple of\n"+
+		"\tservice capacity (worker slots / mean execution time), computed per workload\n"+
+		"\tso that workloads with different service times are compared at equal load.\n"+
+		"\tEmpty uses the configured arrival rate as written.")
 	workers := fs.Int("workers", 2, "worker processes per experiment")
 	concurrency := fs.Int("concurrency", 4, "execution slots per worker process")
 	maxInFlight := fs.Int("max-in-flight", 0, "cap on dispatched-but-unfinished tasks; 0 uses the total worker slot count")
@@ -114,6 +120,16 @@ func main() {
 		log.Info("redis reachable", "addr", cfg.Redis.Addr, "version", redisVersion(info))
 	}
 
+	var loadList []float64
+	for _, v := range cli.SplitList(*loads) {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "invalid --loads value %q: %v\n", v, err)
+			os.Exit(2)
+		}
+		loadList = append(loadList, f)
+	}
+
 	runner, err := bench.NewRunner(bench.Options{
 		Base:              cfg,
 		RunID:             id,
@@ -121,6 +137,7 @@ func main() {
 		Schedulers:        cli.SplitList(*schedulersFlag),
 		Workloads:         cli.SplitList(*workloadsFlag),
 		Repetitions:       *repetitions,
+		LoadMultipliers:   loadList,
 		WorkerProcesses:   *workers,
 		WorkerConcurrency: *concurrency,
 		MaxInFlight:       *maxInFlight,
@@ -139,6 +156,7 @@ func main() {
 		"workloads", cli.SplitList(*workloadsFlag),
 		"repetitions", *repetitions,
 		"tasks_per_experiment", cfg.Workload.Count,
+		"load_multipliers", loadList,
 		"workers", *workers,
 		"concurrency", *concurrency,
 		"results_dir", runner.RunDir())
@@ -173,15 +191,18 @@ func printTable(out *os.File, m *bench.Manifest) {
 		if rows[i].Identity.Scheduler != rows[j].Identity.Scheduler {
 			return rows[i].Identity.Scheduler < rows[j].Identity.Scheduler
 		}
+		if rows[i].OfferedLoad != rows[j].OfferedLoad {
+			return rows[i].OfferedLoad < rows[j].OfferedLoad
+		}
 		return rows[i].Identity.Repetition < rows[j].Identity.Repetition
 	})
 
 	fmt.Fprintf(out, "\nRun %s: %d experiments\n\n", m.RunID, len(rows))
 	w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "workload\tscheduler\trep\tdone\tp50 s\tp95 s\tp99 s\tmaxwait s\tthr/s\tmiss\tutil\tjain\tdead")
+	fmt.Fprintln(w, "workload\tscheduler\tload\trep\tdone\tp50 s\tp95 s\tp99 s\tmaxwait s\tthr/s\tmiss\tutil\tjain\tdead")
 	for _, r := range rows {
-		fmt.Fprintf(w, "%s\t%s\t%d\t%d\t%.3f\t%.3f\t%.3f\t%.3f\t%.1f\t%.3f\t%.2f\t%.3f\t%d\n",
-			r.Identity.Workload, r.Identity.Scheduler, r.Identity.Repetition,
+		fmt.Fprintf(w, "%s\t%s\t%.2f\t%d\t%d\t%.3f\t%.3f\t%.3f\t%.3f\t%.1f\t%.3f\t%.2f\t%.3f\t%d\n",
+			r.Identity.Workload, r.Identity.Scheduler, r.OfferedLoad, r.Identity.Repetition,
 			r.TasksCompleted, r.Latency.P50, r.Latency.P95, r.Latency.P99, r.Wait.Max,
 			r.Throughput, r.DeadlineMissRate, r.WorkerUtilization, r.JainFairnessService,
 			r.TasksDeadLettered)

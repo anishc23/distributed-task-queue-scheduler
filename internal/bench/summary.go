@@ -16,6 +16,10 @@ type RunIdentity struct {
 	Workload   string `json:"workload"`
 	Repetition int    `json:"repetition"`
 	Seed       int64  `json:"seed"`
+	// OfferedLoad is the mean arrival rate as a multiple of service capacity.
+	// It is part of the identity because the same scheduler and workload at a
+	// different load is a different experiment, not a repetition of one.
+	OfferedLoad float64 `json:"offered_load"`
 }
 
 // Summary is the aggregate record for one experiment.
@@ -78,6 +82,13 @@ type Summary struct {
 	ArrivalRatePerSec float64 `json:"arrival_rate_per_sec"`
 	ExecMinMillis     int64   `json:"exec_min_ms"`
 	ExecMaxMillis     int64   `json:"exec_max_ms"`
+
+	// OfferedLoad, Capacity and MeanExecMillis make each row self-describing:
+	// the same arrival rate is a different load for a workload with a different
+	// mean service time, so the rate alone is not comparable across workloads.
+	OfferedLoad    float64 `json:"offered_load"`
+	Capacity       float64 `json:"capacity_tasks_per_s"`
+	MeanExecMillis float64 `json:"mean_exec_ms"`
 }
 
 // SummaryInput carries everything needed to build a Summary that is not derived
@@ -104,6 +115,9 @@ type SummaryInput struct {
 	ArrivalRatePerSec    float64
 	ExecMinMillis        int64
 	ExecMaxMillis        int64
+	OfferedLoad          float64
+	Capacity             float64
+	MeanExecMillis       float64
 }
 
 // Summarise turns raw task records into the aggregate experiment summary.
@@ -131,6 +145,9 @@ func Summarise(in SummaryInput) Summary {
 		ArrivalRatePerSec:    in.ArrivalRatePerSec,
 		ExecMinMillis:        in.ExecMinMillis,
 		ExecMaxMillis:        in.ExecMaxMillis,
+		OfferedLoad:          in.OfferedLoad,
+		Capacity:             in.Capacity,
+		MeanExecMillis:       in.MeanExecMillis,
 		TenantCount:          len(in.Tenants),
 	}
 

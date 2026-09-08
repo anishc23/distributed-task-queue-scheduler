@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -36,6 +37,16 @@ type Options struct {
 	// Repetitions is how many times each cell is repeated. Repetition i uses
 	// seed BaseSeed+i, so repetitions are different but reproducible.
 	Repetitions int
+	// LoadMultipliers sweeps offered load: for each value the workload's mean
+	// arrival rate is set to that multiple of service capacity, where capacity
+	// is derived from the workload's own mean execution time and the total slot
+	// count. Empty means "use the configured arrival rate as written", which is
+	// the behaviour when no sweep is requested.
+	//
+	// Deriving the rate per workload matters: the same arrival rate is a
+	// different offered load for workloads with different mean service times,
+	// and the bursty workload ignores arrival_rate_per_sec entirely.
+	LoadMultipliers []float64
 	// WorkerProcesses is how many independent worker consumers run.
 	WorkerProcesses int
 	// WorkerConcurrency is execution slots per worker process.
@@ -66,6 +77,7 @@ type Manifest struct {
 	Schedulers        []string       `json:"schedulers"`
 	Workloads         []string       `json:"workloads"`
 	Repetitions       int            `json:"repetitions"`
+	LoadMultipliers   []float64      `json:"load_multipliers,omitempty"`
 	BaseSeed          int64          `json:"base_seed"`
 	TasksPerRun       int            `json:"tasks_per_run"`
 	WorkerProcesses   int            `json:"worker_processes"`
@@ -109,6 +121,11 @@ func NewRunner(opts Options) (*Runner, error) {
 			return nil, fmt.Errorf("benchmark: unknown workload %q, expected one of %v", w, config.WorkloadTypes())
 		}
 	}
+	for _, l := range opts.LoadMultipliers {
+		if l <= 0 {
+			return nil, fmt.Errorf("benchmark: load multipliers must be > 0, got %g", l)
+		}
+	}
 	if opts.SettleInterval <= 0 {
 		opts.SettleInterval = 100 * time.Millisecond
 	}
@@ -146,6 +163,7 @@ func (r *Runner) Run(ctx context.Context) (*Manifest, error) {
 		Schedulers:        r.opts.Schedulers,
 		Workloads:         r.opts.Workloads,
 		Repetitions:       r.opts.Repetitions,
+		LoadMultipliers:   r.opts.LoadMultipliers,
 		BaseSeed:          r.opts.Base.Workload.Seed,
 		TasksPerRun:       r.opts.Base.Workload.Count,
 		WorkerProcesses:   r.opts.WorkerProcesses,
@@ -155,51 +173,61 @@ func (r *Runner) Run(ctx context.Context) (*Manifest, error) {
 		Config:            r.opts.Base,
 	}
 
-	total := len(r.opts.Schedulers) * len(r.opts.Workloads) * r.opts.Repetitions
+	loads := r.opts.LoadMultipliers
+	if len(loads) == 0 {
+		loads = []float64{0} // 0 means "leave the configured arrival rate alone"
+	}
+	total := len(r.opts.Schedulers) * len(r.opts.Workloads) * len(loads) * r.opts.Repetitions
 	done := 0
 	for _, sched := range r.opts.Schedulers {
 		for _, wl := range r.opts.Workloads {
-			for rep := 0; rep < r.opts.Repetitions; rep++ {
-				if err := ctx.Err(); err != nil {
-					manifest.FinishedAt = time.Now().UTC()
-					_ = WriteJSON(filepath.Join(runDir, "manifest.json"), manifest)
-					return manifest, fmt.Errorf("benchmark interrupted after %d/%d experiments: %w", done, total, err)
-				}
-				done++
-				id := RunIdentity{
-					RunID:      r.opts.RunID,
-					Scheduler:  sched,
-					Workload:   wl,
-					Repetition: rep,
-					Seed:       r.opts.Base.Workload.Seed + int64(rep),
-				}
-				r.log.Info("starting experiment",
-					"progress", fmt.Sprintf("%d/%d", done, total),
-					"scheduler", sched, "workload", wl, "repetition", rep, "seed", id.Seed)
+			for _, load := range loads {
+				for rep := 0; rep < r.opts.Repetitions; rep++ {
+					if err := ctx.Err(); err != nil {
+						manifest.FinishedAt = time.Now().UTC()
+						_ = WriteJSON(filepath.Join(runDir, "manifest.json"), manifest)
+						return manifest, fmt.Errorf("benchmark interrupted after %d/%d experiments: %w", done, total, err)
+					}
+					done++
+					id := RunIdentity{
+						RunID:       r.opts.RunID,
+						Scheduler:   sched,
+						Workload:    wl,
+						Repetition:  rep,
+						Seed:        r.opts.Base.Workload.Seed + int64(rep),
+						OfferedLoad: load,
+					}
+					r.log.Info("starting experiment",
+						"progress", fmt.Sprintf("%d/%d", done, total),
+						"scheduler", sched, "workload", wl, "load", load, "repetition", rep, "seed", id.Seed)
 
-				summary, err := r.runOne(ctx, id, runDir)
-				if err != nil {
-					msg := fmt.Sprintf("%s/%s rep %d: %v", sched, wl, rep, err)
-					manifest.Failures = append(manifest.Failures, msg)
-					r.log.Error("experiment failed", "scheduler", sched, "workload", wl, "repetition", rep, "error", err)
-					continue
+					summary, err := r.runOne(ctx, id, runDir)
+					if err != nil {
+						msg := fmt.Sprintf("%s/%s load %.2f rep %d: %v", sched, wl, load, rep, err)
+						manifest.Failures = append(manifest.Failures, msg)
+						r.log.Error("experiment failed", "scheduler", sched, "workload", wl,
+							"load", load, "repetition", rep, "error", err)
+						continue
+					}
+					if err := agg.Append(summary); err != nil {
+						return manifest, err
+					}
+					if err := tenantCSV.Append(summary); err != nil {
+						return manifest, err
+					}
+					manifest.Experiments = append(manifest.Experiments, summary)
+					r.log.Info("experiment complete",
+						"scheduler", sched, "workload", wl,
+						"offered_load", fmt.Sprintf("%.2f", summary.OfferedLoad),
+						"repetition", rep,
+						"completed", summary.TasksCompleted,
+						"dead_lettered", summary.TasksDeadLettered,
+						"p99_latency_s", fmt.Sprintf("%.3f", summary.Latency.P99),
+						"throughput_per_s", fmt.Sprintf("%.1f", summary.Throughput),
+						"deadline_miss_rate", fmt.Sprintf("%.3f", summary.DeadlineMissRate),
+						"jain", fmt.Sprintf("%.3f", summary.JainFairnessService),
+						"timed_out", summary.TimedOut)
 				}
-				if err := agg.Append(summary); err != nil {
-					return manifest, err
-				}
-				if err := tenantCSV.Append(summary); err != nil {
-					return manifest, err
-				}
-				manifest.Experiments = append(manifest.Experiments, summary)
-				r.log.Info("experiment complete",
-					"scheduler", sched, "workload", wl, "repetition", rep,
-					"completed", summary.TasksCompleted,
-					"dead_lettered", summary.TasksDeadLettered,
-					"p99_latency_s", fmt.Sprintf("%.3f", summary.Latency.P99),
-					"throughput_per_s", fmt.Sprintf("%.1f", summary.Throughput),
-					"deadline_miss_rate", fmt.Sprintf("%.3f", summary.DeadlineMissRate),
-					"jain", fmt.Sprintf("%.3f", summary.JainFairnessService),
-					"timed_out", summary.TimedOut)
 			}
 		}
 	}
@@ -222,7 +250,8 @@ func (r *Runner) effectiveMaxInFlight() int {
 func (r *Runner) experimentConfig(id RunIdentity) *config.Config {
 	cfg := *r.opts.Base
 	cfg.Streams = r.opts.Base.Streams
-	cfg.Streams.Namespace = fmt.Sprintf("bench-%s-%s-%s-r%d", id.RunID, id.Scheduler, id.Workload, id.Repetition)
+	cfg.Streams.Namespace = fmt.Sprintf("bench-%s-%s-%s-l%s-r%d",
+		id.RunID, id.Scheduler, id.Workload, loadTag(id.OfferedLoad), id.Repetition)
 	cfg.Scheduler = r.opts.Base.Scheduler
 	cfg.Scheduler.Policy = id.Scheduler
 	cfg.Scheduler.MaxInFlight = r.effectiveMaxInFlight()
@@ -242,11 +271,37 @@ func (r *Runner) runOne(ctx context.Context, id RunIdentity, runDir string) (Sum
 	cfg := r.experimentConfig(id)
 	log := r.log.With("scheduler", id.Scheduler, "workload", id.Workload, "repetition", id.Repetition)
 
+	// Generate once to learn the workload's own mean service time, then, if a
+	// load multiplier was requested, derive the arrival rate that produces that
+	// offered load and regenerate. Changing the arrival rate provably does not
+	// change which tasks are generated - only when they arrive - so this varies
+	// exactly one thing. See TestScalingRateDoesNotChangeTheTaskMix.
 	specs, err := workload.Generate(cfg.Workload)
 	if err != nil {
 		return Summary{}, err
 	}
 	plan := workload.Summarise(specs)
+
+	slots := r.opts.WorkerProcesses * r.opts.WorkerConcurrency
+	capacity := workload.Capacity(plan.MeanExecMS, slots)
+	if id.OfferedLoad > 0 {
+		rate, err := workload.RateForLoad(id.OfferedLoad, plan.MeanExecMS, slots)
+		if err != nil {
+			return Summary{}, err
+		}
+		scaled, err := workload.WithArrivalRate(cfg.Workload, rate)
+		if err != nil {
+			return Summary{}, err
+		}
+		cfg.Workload = scaled
+		specs, err = workload.Generate(cfg.Workload)
+		if err != nil {
+			return Summary{}, err
+		}
+		plan = workload.Summarise(specs)
+	}
+	meanArrival := workload.MeanArrivalRatePerSec(cfg.Workload)
+	offered := workload.OfferedLoad(meanArrival, capacity)
 
 	br := broker.NewWithClient(r.opts.Redis, cfg.Streams)
 	// A fresh namespace per experiment guarantees results are never mixed.
@@ -275,7 +330,7 @@ func (r *Runner) runOne(ctx context.Context, id RunIdentity, runDir string) (Sum
 
 	timeout := r.opts.Timeout
 	if timeout <= 0 {
-		timeout = deriveTimeout(plan, r.opts.WorkerProcesses*r.opts.WorkerConcurrency)
+		timeout = deriveTimeout(plan, slots)
 	}
 	expCtx, cancelExp := context.WithCancel(ctx)
 	defer cancelExp()
@@ -386,7 +441,6 @@ func (r *Runner) runOne(ctx context.Context, id RunIdentity, runDir string) (Sum
 		return Summary{}, err
 	}
 
-	slots := r.opts.WorkerProcesses * r.opts.WorkerConcurrency
 	summary := Summarise(SummaryInput{
 		Identity:             id,
 		Tenants:              cfg.Workload.TenantIDs(),
@@ -406,13 +460,18 @@ func (r *Runner) runOne(ctx context.Context, id RunIdentity, runDir string) (Sum
 		WorkerSlotSeconds:    experimentDuration.Seconds() * float64(slots),
 		ProducerMaxLag:       submitStats.MaxLag,
 		ProducerMeanLag:      submitStats.MeanLag,
-		ArrivalRatePerSec:    cfg.Workload.ArrivalRatePerSec,
+		ArrivalRatePerSec:    meanArrival,
 		ExecMinMillis:        cfg.Workload.Exec.MinMillis,
 		ExecMaxMillis:        cfg.Workload.Exec.MaxMillis,
+		OfferedLoad:          offered,
+		Capacity:             capacity,
+		MeanExecMillis:       plan.MeanExecMS,
 	})
 
-	base := fmt.Sprintf("%s_%s_rep%d", id.Scheduler, id.Workload, id.Repetition)
-	if err := WriteRawCSV(filepath.Join(runDir, "raw", base+".csv"), id, results); err != nil {
+	base := fmt.Sprintf("%s_%s_l%s_rep%d", id.Scheduler, id.Workload, loadTag(offered), id.Repetition)
+	rawID := id
+	rawID.OfferedLoad = offered
+	if err := WriteRawCSV(filepath.Join(runDir, "raw", base+".csv"), rawID, results); err != nil {
 		return Summary{}, err
 	}
 	if len(deadLetters) > 0 {
@@ -421,6 +480,11 @@ func (r *Runner) runOne(ctx context.Context, id RunIdentity, runDir string) (Sum
 		}
 	}
 	return summary, nil
+}
+
+// loadTag renders an offered load for use in a file or namespace name.
+func loadTag(load float64) string {
+	return strings.ReplaceAll(fmt.Sprintf("%.2f", load), ".", "p")
 }
 
 // waitReady blocks until every component reports readiness.

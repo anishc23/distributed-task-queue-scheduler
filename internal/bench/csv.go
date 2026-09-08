@@ -17,7 +17,7 @@ import (
 // identity columns so that concatenating files from different runs can never
 // silently mix experiments.
 var rawHeader = []string{
-	"run_id", "scheduler", "workload", "repetition", "seed",
+	"run_id", "scheduler", "workload", "repetition", "seed", "offered_load",
 	"task_id", "tenant_id", "priority", "outcome",
 	"submitted_at", "dispatched_at", "started_at", "finished_at", "deadline",
 	"exec_ms", "actual_exec_ms", "retry_count",
@@ -45,7 +45,7 @@ func WriteRawCSV(path string, id RunIdentity, results []domain.Result) error {
 	for _, r := range sorted {
 		row := []string{
 			id.RunID, id.Scheduler, id.Workload, strconv.Itoa(id.Repetition), strconv.FormatInt(id.Seed, 10),
-			r.TaskID, r.TenantID, strconv.Itoa(r.Priority), string(r.Outcome),
+			f6(id.OfferedLoad), r.TaskID, r.TenantID, strconv.Itoa(r.Priority), string(r.Outcome),
 			ts(r.SubmittedAt), ts(r.DispatchedAt), ts(r.StartedAt), ts(r.FinishedAt), ts(r.Deadline),
 			strconv.FormatInt(r.ExecMillis, 10), strconv.FormatInt(r.ActualExecMillis, 10), strconv.Itoa(r.RetryCount),
 			f6(r.QueueWait().Seconds()), f6(r.Latency().Seconds()), boolStr(r.MissedDeadline()), r.Worker,
@@ -64,6 +64,7 @@ func WriteRawCSV(path string, id RunIdentity, results []domain.Result) error {
 // aggregateHeader is the schema of the one-row-per-experiment CSV.
 var aggregateHeader = []string{
 	"run_id", "timestamp_utc", "scheduler", "workload", "repetition", "seed",
+	"offered_load", "capacity_tasks_per_s", "mean_exec_ms",
 	"tasks_planned", "tasks_submitted", "tasks_completed", "tasks_dead_lettered",
 	"tasks_retried", "task_failures", "duplicate_completions", "timed_out",
 	"worker_processes", "worker_concurrency", "total_slots", "max_in_flight",
@@ -109,6 +110,7 @@ func (a *AggregateWriter) Append(s Summary) error {
 	row := []string{
 		s.Identity.RunID, s.Timestamp.UTC().Format(time.RFC3339), s.Identity.Scheduler, s.Identity.Workload,
 		strconv.Itoa(s.Identity.Repetition), strconv.FormatInt(s.Identity.Seed, 10),
+		f6(s.OfferedLoad), f6(s.Capacity), f6(s.MeanExecMillis),
 		strconv.Itoa(s.TasksPlanned), strconv.Itoa(s.TasksSubmitted), strconv.Itoa(s.TasksCompleted),
 		strconv.Itoa(s.TasksDeadLettered), strconv.Itoa(s.TasksRetried), strconv.Itoa(s.TaskFailures),
 		strconv.Itoa(s.DuplicateCompletions), boolStr(s.TimedOut),
@@ -145,7 +147,7 @@ func (a *AggregateWriter) Close() error {
 // tenantHeader is the schema of the per-tenant CSV: one row per tenant per
 // experiment.
 var tenantHeader = []string{
-	"run_id", "scheduler", "workload", "repetition", "seed", "tenant",
+	"run_id", "scheduler", "workload", "repetition", "seed", "offered_load", "tenant",
 	"completed_tasks", "service_seconds", "service_share",
 	"latency_mean_s", "latency_p50_s", "latency_p95_s", "latency_p99_s", "latency_max_s",
 	"wait_p99_s", "wait_max_s", "deadline_missed", "deadline_miss_rate",
@@ -180,7 +182,8 @@ func (tw *TenantWriter) Append(s Summary) error {
 	for _, t := range s.Tenants {
 		row := []string{
 			s.Identity.RunID, s.Identity.Scheduler, s.Identity.Workload,
-			strconv.Itoa(s.Identity.Repetition), strconv.FormatInt(s.Identity.Seed, 10), t.Tenant,
+			strconv.Itoa(s.Identity.Repetition), strconv.FormatInt(s.Identity.Seed, 10),
+			f6(s.OfferedLoad), t.Tenant,
 			strconv.Itoa(t.Completed), f6(t.ServiceSeconds), f6(t.ServiceShare),
 			f6(t.Latency.Mean), f6(t.Latency.P50), f6(t.Latency.P95), f6(t.Latency.P99), f6(t.Latency.Max),
 			f6(t.Wait.P99), f6(t.Wait.Max),
