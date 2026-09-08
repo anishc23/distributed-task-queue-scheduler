@@ -209,9 +209,9 @@ does not distinguish policies on this workload.
 The metric that does distinguish them is **per-tenant latency**, recorded in
 `tenants.csv` and plotted as `tenant_latency_skew.png`. A work-conserving fair
 queue protects a small tenant's *latency* even when it cannot raise the tenant's
-*share*. In the shipped example run, tenant B–E p95 latency is roughly 0.07 s
-under WFQ versus 0.35–0.8 s under FIFO, EDF and strict priority, while all four
-report a Jain index near 0.24. Report both.
+*share*. In the 80-experiment run reported in the README, tenant B–E p95 latency
+is 0.077 s under WFQ versus ~2.7 s under FIFO, EDF and strict priority — a 36x
+difference — while all four report a Jain index of 0.246. Report both.
 
 ## Reading the results
 

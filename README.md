@@ -787,30 +787,128 @@ of the workload, not a failure of the scheduler.
 
 What actually distinguishes the policies under skew is **per-tenant latency**. A
 work-conserving fair queue protects a small tenant's latency even when it cannot
-raise its share. In the shipped example run, small-tenant p95 latency is around
-0.07 s under WFQ versus 0.35–0.8 s under FIFO, EDF and priority, while all four
-report a Jain index near 0.24. Report both numbers; either alone is misleading.
+raise its share. In the measured run below, small-tenant p95 latency is 0.077 s
+under WFQ versus ~2.7 s under FIFO, EDF and priority, while all four report a
+Jain index of 0.246. Report both numbers; either alone is misleading.
 
 **Throughput.** Expect all four to be close. Work-conserving schedulers do not
 change how much work gets done, only who waits. A large throughput gap usually
 means a configuration problem — a timed-out experiment, a dispatch bottleneck,
 an under-loaded run — not a scheduling insight.
 
-### Example output shape
+---
 
-From `results/example/plots/summary_table.md` — 150 tasks, one repetition, on a
-laptop. **Illustrative only; not a result to cite.**
+## Measured results
 
-| workload | scheduler | p50 s | p95 s | p99 s | max wait s | tasks/s | deadline miss | Jain |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| uniform | fifo | 0.162 | 0.263 | 0.276 | 0.226 | 147.4 | 0.000 | 0.987 |
-| uniform | priority | 0.065 | 0.435 | 0.460 | 0.423 | 147.9 | 0.020 | 0.987 |
-| uniform | edf | 0.136 | 0.328 | 0.350 | 0.309 | 148.2 | 0.000 | 0.987 |
-| uniform | wfq | 0.158 | 0.293 | 0.314 | 0.266 | 147.4 | 0.000 | 0.987 |
+A full run of the shipped `experiments/full.yaml` profile: **80 experiments**
+(16 cells x 5 repetitions), 4000 tasks each, 320,000 tasks total. Every
+experiment completed every task; none timed out, none were dead-lettered, and
+maximum producer lag was 14 ms, so the load generator was never the bottleneck.
 
-Note the shape rather than the values: priority halves the median and roughly
-doubles the tail and the maximum wait, which is the starvation trade-off made
-visible.
+```bash
+make bench-full REPETITIONS=5 RUN=full-5rep && make plots RUN=full-5rep
+```
+
+Environment: macOS 26.6 on an Apple M5 (10 cores), Redis 8.10.1 on localhost,
+4 worker processes x 4 slots = 16 slots, `max_in_flight=16`, arrivals at 400/s
+against a service capacity of ~320/s (≈1.25x offered load). Values are the mean
+of 5 repetitions, with standard deviation where it is material. **These numbers
+describe this machine under this configuration; do not port them elsewhere.**
+
+| workload | scheduler | p50 s | p99 s | max wait s | deadline miss | tasks/s | Jain |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| uniform | fifo | 1.505 | 2.946 | 2.927 | 0.794 | 308.1 | 0.999 |
+| uniform | priority | **0.148** | 4.562 | 4.559 | 0.463 | 307.6 | 0.999 |
+| uniform | edf | 1.496 | 3.012 | 3.099 | 0.792 | 307.8 | 0.999 |
+| uniform | wfq | 1.493 | 3.359 | 3.388 | 0.785 | 307.6 | 0.999 |
+| bursty | fifo | 3.223 | **6.234** | 6.255 | 0.943 | 308.6 | 0.999 |
+| bursty | priority | 1.895 | 7.511 | 7.546 | 0.707 | 307.7 | 0.999 |
+| bursty | edf | 3.156 | 6.276 | 6.342 | 0.937 | 308.5 | 0.999 |
+| bursty | wfq | 3.185 | 6.342 | 6.376 | 0.943 | 307.7 | 0.999 |
+| heavy_tailed | fifo | 0.964 | 1.843 | **1.799** | 0.578 | 270.8 | 0.984 |
+| heavy_tailed | priority | 0.116 | 2.908 | 2.900 | 0.397 | 270.3 | 0.984 |
+| heavy_tailed | edf | **0.029** | **1.387** | 9.849 | **0.001** | 241.6 | 0.984 |
+| heavy_tailed | wfq | 0.491 | 2.801 | 2.848 | 0.430 | 257.3 | 0.984 |
+| multi_tenant | fifo | 1.479 | 2.900 | 2.884 | 0.780 | 308.1 | 0.246 |
+| multi_tenant | priority | 0.120 | 4.446 | 4.442 | 0.453 | 307.9 | 0.246 |
+| multi_tenant | edf | 1.447 | 2.936 | 2.989 | 0.775 | 308.7 | 0.246 |
+| multi_tenant | wfq | 1.498 | 2.920 | 2.895 | **0.727** | 308.0 | 0.246 |
+
+### What the run actually shows
+
+**Throughput is flat, as it should be.** All four policies land within 1% of
+each other (307–309 tasks/s) on three of four workloads. Work-conserving
+schedulers do not change how much work gets done, only who waits. The exception
+is `heavy_tailed`, where EDF drops to 242 tasks/s: deferring long tasks in
+favour of urgent short ones leaves slots idle at the end of the run while the
+deferred giants drain.
+
+**Strict priority is a median/tail trade, and the numbers are stark.** On
+`uniform` it cuts p50 by 10x (1.505s → 0.148s) and pays for it with a 55%
+worse p99 (2.946s → 4.562s). Breaking that down by priority level makes the
+mechanism explicit:
+
+| scheduler | prio 0 | prio 1 | prio 2 | prio 3 | prio 4 | spread |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| fifo | 2.827 | 2.833 | 2.805 | 2.844 | 2.818 | 1.0x |
+| **priority** | **4.477** | 0.079 | 0.074 | 0.073 | 0.073 | **61.5x** |
+| edf | 2.832 | 2.840 | 2.809 | 2.846 | 2.823 | 1.0x |
+| wfq | 3.009 | 2.991 | 3.002 | 3.018 | 3.063 | 1.0x |
+
+p95 latency in seconds by priority level, `uniform`, 5 repetitions pooled.
+Priority 0 is the lowest; the weights `[50,25,15,7,3]` make it the largest
+population. Under strict priority, everything above priority 0 completes in
+~75 ms while priority 0 waits 4.5s — a **61.5x spread**. This is starvation,
+measured. FIFO, EDF and WFQ show a flat 1.0x because none of them reads the
+priority field.
+
+**EDF nearly eliminates deadline misses, and starves the tail to do it.** On
+`heavy_tailed` its miss rate is 0.001 against FIFO's 0.578 — a ~500x
+improvement — with the best p50 (0.029s) and best p99 (1.387s) of the four.
+But its maximum wait is 9.85s, the worst in the entire matrix, and 15 tasks
+waited more than 5s. Those tasks are precisely the long ones (6000ms, 5148ms,
+3233ms), which under `deadline = base + exec*4 + jitter` carry the most distant
+deadlines. EDF defers exactly the work that can afford to be deferred, and every
+one of those starved tasks still made its deadline. The starvation is real and
+it is also, here, the correct decision — which is why max wait and miss rate
+must be read together.
+
+**WFQ's fairness win does not show up in Jain's index.** Every scheduler
+reports 0.246 on `multi_tenant`, near the `1/n = 0.2` floor, because the index
+over completed service is demand-limited: tenants B–E submit 3/3/2/2% of the
+work, so no policy can hand them a large share of service. Per-tenant latency
+is where the difference lives:
+
+| scheduler | A (90%) | B | C | D | E | small/A |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| fifo | 2.785 | 2.766 | 2.695 | 2.712 | 2.710 | 0.98x |
+| priority | 4.229 | 4.250 | 4.234 | 4.198 | 4.120 | 0.99x |
+| edf | 2.759 | 2.711 | 2.639 | 2.645 | 2.716 | 0.97x |
+| **wfq** | 2.843 | **0.077** | **0.077** | **0.077** | **0.076** | **0.03x** |
+
+p95 latency in seconds per tenant, `multi_tenant`, mean of 5 repetitions. WFQ
+gives the small tenants **36x lower p95 latency** (0.077s vs ~2.7s) while
+costing the dominant tenant 2% (2.843s vs FIFO's 2.785s). Under FIFO, EDF and
+priority the small tenants are queued behind the noisy neighbour's backlog and
+see essentially the same latency as it does — equal treatment that is not
+isolation. This is the single clearest result in the matrix, and it is invisible
+if you only look at the fairness index.
+
+**Bursty overload compresses the differences.** At a 943‰ miss rate nearly
+everything is late regardless of policy, and p99 sits at 6.2–7.5s across the
+board. Under deep enough overload, scheduling stops being able to help; only
+priority still buys anything, and only by sacrificing its low-priority tail.
+
+Variance across the 5 repetitions was small on `uniform`, `bursty` and
+`multi_tenant` (standard deviations of 0.02–0.35s on p99). It was substantially
+larger on `heavy_tailed` — for example EDF's p99 was 1.387±0.424s and FIFO's
+deadline miss rate 0.578±0.246 — which is expected: a Pareto duration
+distribution means a single run's outcome depends heavily on where the few
+6-second tasks happen to land. Heavy-tailed cells need more repetitions than
+the others before their numbers should be trusted.
+
+Charts for this run are in `results/full-5rep/plots/`. That directory is not
+committed; regenerate it with the command above.
 
 ---
 
