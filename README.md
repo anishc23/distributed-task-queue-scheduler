@@ -1052,6 +1052,129 @@ and maximum wait have to be read as a pair for this policy.
 
 ![Deadline compliance against offered load](docs/images/sweep_deadline_miss.png)
 
+### What does the central scheduler actually cost?
+
+The project's design claim is that a real centralised scheduler is worth having.
+Every comparison above is between four policies that all pay the same
+centralisation overhead, so the overhead itself was invisible. The `none`
+control arm removes the scheduler entirely — workers consume the ingress stream
+directly in arrival order — and since that produces the same execution order as
+`fifo`, comparing the two isolates the cost of centralisation from the effect of
+the ordering policy.
+
+```bash
+go run ./cmd/benchmark --schedulers none,fifo,priority,edf,wfq \
+  --loads 0.75,1.0,1.25,1.5 --repetitions 3 --run-id control-arm
+```
+
+240 experiments, 960,000 tasks.
+
+**Centralisation is nearly free.** Throughput lost by `fifo` relative to `none`,
+which run identical execution orders:
+
+| offered load | uniform | bursty | heavy_tailed | multi_tenant |
+| --- | ---: | ---: | ---: | ---: |
+| 0.75x | 0.0% | 0.2% | 0.0% | 0.0% |
+| 1.00x | 1.4% | 1.1% | 0.8% | 1.2% |
+| 1.25x | 1.5% | 1.6% | 1.2% | 1.6% |
+| 1.50x | 1.6% | 1.6% | 1.3% | 1.6% |
+
+Below capacity the cost is unmeasurable: there is no backlog, so the pending set
+is written and drained immediately. Above capacity it settles at about **1.5%**,
+which is the extra Redis round trip per task through the pending ZSET. The p99
+penalty is 3–8%, with a spike at exactly 1.0x load where small differences
+amplify at the knee.
+
+**Using the scheduler costs more than having it, and buys far more.** At 1.25x
+load on the heavy-tailed workload:
+
+| arm | deadline miss | max wait s | p50 s | throughput | thr. vs `none` |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `none` (no scheduler) | 0.609 | 2.09 | 1.084 | 272.7 | — |
+| fifo | 0.644 | 2.29 | 1.188 | 269.4 | −1.2% |
+| priority | 0.415 | 3.69 | 0.125 | 262.3 | −3.8% |
+| wfq | 0.508 | 3.38 | 0.582 | 255.2 | −6.4% |
+| **edf** | **0.005** | 8.25 | 0.057 | 244.0 | −10.5% |
+
+EDF gives up 10.5% throughput against no scheduler at all and returns a **122x
+reduction in deadline misses**. WFQ gives up 6.4% and returns tenant isolation:
+per-tenant p95 latency under the 90/3/3/2/2 skew, small tenants relative to the
+dominant one, is 0.978x under `none` and **0.029x under WFQ** — a 32x latency
+improvement for the small tenants that no amount of not-scheduling can produce.
+
+**`fifo` is the one arm that fails to justify itself.** It costs 1.2% throughput
+against `none` and delivers the same ordering, so it is strictly worse than
+having no scheduler at all. That is exactly what a control is for: FIFO is
+useful here as an experimental baseline, not as something you would deploy.
+
+### Do the conclusions survive real work?
+
+Every result above comes from workers that sleep. A sleeping worker uses no CPU,
+so N slots always deliver N-way parallelism and utilisation measures slot
+occupancy rather than work. `worker.exec_mode: cpu` burns each task's duration
+in real computation instead. The comparison below runs the identical experiment
+twice, 8 slots on a 10-core machine, at 1.25x load:
+
+```bash
+make bench RUN_CONFIG=experiments/realwork.yaml WORKERS=2 CONCURRENCY=4
+```
+
+**Real work inflates execution and costs throughput.** Measured execution time
+against the declared duration, and throughput against the sleep run:
+
+| workload | scheduler | declared | measured | inflation | throughput drop |
+| --- | --- | ---: | ---: | ---: | ---: |
+| uniform | fifo | 50.0 ms | 60.6 ms | 1.21x | −17% |
+| uniform | edf | 50.0 ms | 65.1 ms | 1.30x | −22% |
+| uniform | wfq | 50.0 ms | 73.2 ms | 1.46x | −31% |
+| heavy_tailed | fifo | 47.8 ms | 60.7 ms | 1.27x | −20% |
+| heavy_tailed | edf | 47.8 ms | 62.2 ms | 1.30x | −16% |
+| heavy_tailed | wfq | 47.8 ms | 70.6 ms | 1.48x | −29% |
+
+Even at 8 slots on 10 cores, tasks run 20–50% longer than declared, because the
+worker goroutines share the machine with Redis and the Go runtime. Sleep mode
+cannot show this at all.
+
+**The important finding is that the sleep model flatters deadline-aware
+scheduling.** Deadline miss rate on the heavy-tailed workload, mean of 3
+repetitions:
+
+| scheduler | sleep | cpu | degradation |
+| --- | ---: | ---: | ---: |
+| **edf** | **0.023 ± 0.022** | **0.625 ± 0.099** | **27x worse** |
+| priority | 0.420 ± 0.043 | 0.466 ± 0.010 | 1.1x |
+| wfq | 0.498 ± 0.103 | 0.773 ± 0.060 | 1.6x |
+| fifo | 0.725 ± 0.124 | 0.821 ± 0.076 | 1.1x |
+
+Under sleep, EDF is the clear winner at 0.023. Under real CPU it degrades to
+0.625 and **strict priority becomes the best policy** at 0.466. The gap between
+first and second place is larger than the combined confidence intervals at n=3,
+so this is a real reordering rather than noise.
+
+The mechanism is the oracle assumption, made concrete. Deadlines are generated
+as `base + exec*4 + jitter` from each task's *declared* duration, and EDF orders
+by those deadlines. When actual execution inflates by a variable 1.2–1.5x, the
+deadline EDF is optimising against no longer describes the task, so it defers
+work it believes has slack that in fact does not. WFQ suffers the same way for
+the same reason — its virtual finish times are computed from declared cost — and
+shows the largest latency degradation of any policy.
+
+FIFO degrades least, and the reason is instructive: it reads no task metadata at
+all, so nothing about it depends on the duration model being accurate. Under a
+wrong cost model, knowing nothing is a form of robustness.
+
+**This is the strongest caveat in the project.** The headline WFQ and EDF results
+elsewhere in this README are measured under sleep, which is the regime most
+favourable to them. They should be read as an upper bound on what those policies
+achieve, not as a prediction for a system doing real work with imperfect cost
+estimates. Closing that gap properly needs cost *estimation* from observed
+durations rather than declared ones, which is listed under future work.
+
+Two limits on this comparison specifically: it covers `uniform` and
+`heavy_tailed` only, so WFQ's tenant isolation was not re-tested under CPU load;
+and 3 repetitions is thin for `heavy_tailed`, which the repetition analysis above
+shows needs around 25.
+
 ### How fast is the scheduler itself?
 
 The scheduler is a deliberate single-writer component, so its own capacity
@@ -1294,10 +1417,18 @@ completeness assertions, a container image build, and manifest rendering.
 
 ## Known limitations
 
-1. **Simulated execution.** Workers sleep rather than compute. Utilisation is
-   slot occupancy, not CPU, and there are no cache, memory or I/O effects.
-2. **WFQ knows exact task cost.** Real schedulers must estimate it. These
-   results are an upper bound on WFQ's achievable fairness.
+1. **Simulated execution flatters cost-aware policies.** The default workers
+   sleep rather than compute, so utilisation is slot occupancy and there are no
+   cache, memory or I/O effects. Measured against `exec_mode: cpu`, this is not
+   a neutral simplification: EDF's deadline miss rate on the heavy-tailed
+   workload degrades 27x under real CPU and strict priority overtakes it,
+   because execution inflates 1.2-1.5x and the declared durations that EDF and
+   WFQ optimise against stop describing the tasks. The headline EDF and WFQ
+   results here are an upper bound, not a prediction.
+2. **WFQ and EDF know exact task cost.** Real schedulers must estimate it, and
+   the real-work comparison shows what that assumption is worth: both policies
+   degrade markedly once measured durations diverge from declared ones, while
+   FIFO, which reads no task metadata, is barely affected.
 3. **Non-preemptive, whole-task granularity.** Fairness is approximate over
    horizons shorter than the largest task.
 4. **Single scheduler process.** Scheduling throughput is bounded by one process
