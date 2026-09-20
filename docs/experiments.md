@@ -310,8 +310,9 @@ What to expect:
    I/O effects appear. `worker.exec_mode: cpu` burns the duration in real
    computation instead; running the same experiment both ways shows the sleep
    model is not neutral, because it hides the execution inflation that breaks
-   the cost estimates EDF and WFQ depend on. See the real-work section of the
-   README.
+   EDF's absolute deadline arithmetic. WFQ is unaffected, since it compares
+   tenants against one another and a uniform cost error cancels. See the
+   real-work section of the README.
 2. **WFQ knows exact task cost.** The virtual finish time is computed from the
    task's declared duration, which this system knows exactly. A production
    scheduler must estimate it, and estimation error degrades fairness. The

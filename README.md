@@ -1135,45 +1135,71 @@ Even at 8 slots on 10 cores, tasks run 20–50% longer than declared, because th
 worker goroutines share the machine with Redis and the Go runtime. Sleep mode
 cannot show this at all.
 
-**The important finding is that the sleep model flatters deadline-aware
-scheduling.** Deadline miss rate on the heavy-tailed workload, mean of 3
-repetitions:
+**The sleep model flatters deadline-aware scheduling.** Deadline miss rate on
+the heavy-tailed workload, at **25 repetitions** — the count this project's own
+convergence analysis says that workload requires:
 
 | scheduler | sleep | cpu | degradation |
 | --- | ---: | ---: | ---: |
-| **edf** | **0.023 ± 0.022** | **0.625 ± 0.099** | **27x worse** |
-| priority | 0.420 ± 0.043 | 0.466 ± 0.010 | 1.1x |
-| wfq | 0.498 ± 0.103 | 0.773 ± 0.060 | 1.6x |
-| fifo | 0.725 ± 0.124 | 0.821 ± 0.076 | 1.1x |
+| **edf** | **0.099 ± 0.183** | **0.829 ± 0.173** | **8x worse** |
+| priority | 0.408 ± 0.046 | 0.643 ± 0.078 | 1.6x |
+| wfq | 0.474 ± 0.147 | 0.851 ± 0.039 | 1.8x |
+| fifo | 0.675 ± 0.130 | 0.866 ± 0.048 | 1.3x |
 
-Under sleep, EDF is the clear winner at 0.023. Under real CPU it degrades to
-0.625 and **strict priority becomes the best policy** at 0.466. The gap between
-first and second place is larger than the combined confidence intervals at n=3,
-so this is a real reordering rather than noise.
+Under real CPU, **strict priority becomes the best policy** at 0.643 against
+EDF's 0.829, and the top two are separable at n=25. EDF's advantage over doing
+nothing clever almost vanishes: 0.829 against FIFO's 0.866.
 
-The mechanism is the oracle assumption, made concrete. Deadlines are generated
-as `base + exec*4 + jitter` from each task's *declared* duration, and EDF orders
-by those deadlines. When actual execution inflates by a variable 1.2–1.5x, the
-deadline EDF is optimising against no longer describes the task, so it defers
-work it believes has slack that in fact does not. WFQ suffers the same way for
-the same reason — its virtual finish times are computed from declared cost — and
-shows the largest latency degradation of any policy.
+The mechanism is the oracle assumption made concrete. Deadlines are generated as
+`base + exec*4 + jitter` from each task's *declared* duration, and EDF orders by
+those deadlines. Measured execution inflates 1.5–1.9x under CPU, so the deadline
+EDF optimises against no longer describes the task and it defers work it believes
+has slack that in fact has none. EDF also shows the **largest** execution
+inflation (1.88x) and the largest p99 degradation (4.92x) of any policy.
 
-FIFO degrades least, and the reason is instructive: it reads no task metadata at
-all, so nothing about it depends on the duration model being accurate. Under a
-wrong cost model, knowing nothing is a form of robustness.
+**This table previously reported a 27x degradation from n=3.** At n=25 the
+correct figure is 8x. The direction held but the magnitude was inflated more
+than threefold by the small sample, and the sleep-mode figure it was computed
+against (0.023) was a lucky draw: at n=25 that cell is 0.099 ± 0.183, a standard
+deviation larger than its own mean. Drawing a headline from n=3 on the one
+workload this project had already shown needs 25 was a methodological error, and
+correcting it cost the finding most of its apparent drama.
 
-**This is the strongest caveat in the project.** The headline WFQ and EDF results
-elsewhere in this README are measured under sleep, which is the regime most
-favourable to them. They should be read as an upper bound on what those policies
-achieve, not as a prediction for a system doing real work with imperfect cost
-estimates. Closing that gap properly needs cost *estimation* from observed
-durations rather than declared ones, which is listed under future work.
+**WFQ's tenant isolation survives real work, and strengthens.** Per-tenant p95
+latency under the 90/3/3/2/2 skew, 5 repetitions (`multi_tenant` converges at 5
+by the same analysis):
 
-Two limits on this comparison specifically: it covers `uniform` and
-`heavy_tailed` only, so WFQ's tenant isolation was not re-tested under CPU load;
-and 3 repetitions is thin for `heavy_tailed`, which the repetition analysis above
-shows needs around 25.
+| exec mode | small-tenant p95 under fifo | under wfq | WFQ advantage |
+| --- | ---: | ---: | ---: |
+| sleep | 2.750 s | 0.086 s | **31.8x** |
+| cpu | 5.299 s | 0.133 s | **39.9x** |
+
+I expected the opposite. WFQ computes virtual finish times from declared cost,
+exactly as EDF computes ordering from declared deadlines, so it seemed bound to
+degrade the same way. It does not, and the reason is worth stating: **WFQ's use
+of cost is relative, EDF's is absolute.** WFQ compares tenants against each
+other, so a cost error that inflates every task by roughly the same factor is
+common-mode and cancels in the ratio. EDF compares each task against a
+wall-clock deadline, where the same error does not cancel at all. A cost model
+can be badly wrong and still produce correct fair-queuing decisions; it cannot
+produce correct deadline decisions.
+
+WFQ's *aggregate* p99 does degrade under CPU, because the dominant tenant
+supplies 90% of the sample and absorbs the contention. The isolation property
+and the aggregate latency move in opposite directions, which is why the
+per-tenant view is the one that answers the question.
+
+**What this means for the headline results.** The EDF deadline figures reported
+elsewhere in this README are measured under sleep and should be read as an upper
+bound; under real work EDF is beaten by strict priority on this workload. The
+WFQ fairness figures are **not** subject to that caveat — they were re-tested
+under CPU and held. Closing the EDF gap properly needs cost *estimation* from
+observed durations rather than declared ones, which is listed under future work.
+
+Remaining limits on this comparison: it covers `uniform`, `heavy_tailed` and
+`multi_tenant` but not `bursty`; it runs at a single offered load of 1.25x; and
+it uses 8 slots on a 10-core machine, so a machine with a different core count
+would show different inflation.
 
 ### How fast is the scheduler itself?
 
@@ -1417,18 +1443,21 @@ completeness assertions, a container image build, and manifest rendering.
 
 ## Known limitations
 
-1. **Simulated execution flatters cost-aware policies.** The default workers
-   sleep rather than compute, so utilisation is slot occupancy and there are no
-   cache, memory or I/O effects. Measured against `exec_mode: cpu`, this is not
-   a neutral simplification: EDF's deadline miss rate on the heavy-tailed
-   workload degrades 27x under real CPU and strict priority overtakes it,
-   because execution inflates 1.2-1.5x and the declared durations that EDF and
-   WFQ optimise against stop describing the tasks. The headline EDF and WFQ
-   results here are an upper bound, not a prediction.
-2. **WFQ and EDF know exact task cost.** Real schedulers must estimate it, and
-   the real-work comparison shows what that assumption is worth: both policies
-   degrade markedly once measured durations diverge from declared ones, while
-   FIFO, which reads no task metadata, is barely affected.
+1. **Simulated execution flatters deadline scheduling specifically.** The
+   default workers sleep rather than compute, so utilisation is slot occupancy
+   and there are no cache, memory or I/O effects. Measured against
+   `exec_mode: cpu` at 25 repetitions, this is not neutral: EDF's deadline miss
+   rate on the heavy-tailed workload degrades 8x and strict priority overtakes
+   it, because execution inflates 1.5-1.9x and the declared durations EDF's
+   deadlines derive from stop describing the tasks. The EDF results elsewhere
+   are an upper bound. WFQ's fairness results are not: they were re-tested under
+   CPU and improved, because WFQ compares tenants against each other so a
+   uniform cost error cancels.
+2. **WFQ and EDF know exact task cost.** Real schedulers must estimate it. The
+   real-work comparison shows the assumption matters asymmetrically: EDF, which
+   compares tasks against absolute deadlines, degrades badly when declared and
+   actual durations diverge, while WFQ, which only compares tenants against each
+   other, is barely affected because the error is common-mode.
 3. **Non-preemptive, whole-task granularity.** Fairness is approximate over
    horizons shorter than the largest task.
 4. **Single scheduler process.** Scheduling throughput is bounded by one process
