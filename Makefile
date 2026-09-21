@@ -304,6 +304,13 @@ sweep-plots: ## Plot load curves from a sweep: make sweep-plots RUN=<run id>
 	@test -x $(VENV_PY) || { echo "run 'make python-deps' first"; exit 1; }
 	$(VENV_PY) scripts/plot_load_sweep.py --results-dir=$(RESULTS_DIR) $(if $(RUN),--run=$(RUN),)
 
+.PHONY: report-pdf
+report-pdf: ## Rebuild docs/report.pdf from docs/report.md (needs pandoc + typst)
+	@command -v pandoc >/dev/null || { echo "pandoc not installed: brew install pandoc typst"; exit 1; }
+	@command -v typst  >/dev/null || { echo "typst not installed: brew install typst"; exit 1; }
+	pandoc docs/report.md -o docs/report.pdf --pdf-engine=typst --toc --toc-depth=2
+	@echo "wrote docs/report.pdf"
+
 .PHONY: docs-charts
 docs-charts: ## Copy a run's charts into docs/images for the README: make docs-charts RUN=<id>
 	@test -n "$(RUN)" || { echo 'set RUN=<run id>, e.g. make docs-charts RUN=final-25rep'; exit 1; }

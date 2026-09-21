@@ -1496,6 +1496,7 @@ completeness assertions, a container image build, and manifest rendering.
 
 ## Documentation
 
+- **[docs/report.md](docs/report.md)** — the full technical report ([PDF](docs/report.pdf)): research question, methodology, all results, threats to validity
 - [docs/architecture.md](docs/architecture.md) — components, data flow, atomicity, persisted state
 - [docs/experiments.md](docs/experiments.md) — methodology, load sizing, metric definitions, caveats
 - [docs/metrics.md](docs/metrics.md) — full metrics reference with PromQL examples
