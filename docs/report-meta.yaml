@@ -1,0 +1,18 @@
+# Pandoc layout settings for docs/report.md.
+#
+# These live outside the Markdown on purpose: GitHub renders YAML front matter
+# as a metadata table at the top of the rendered file, which would show PDF
+# plumbing (page geometry, font size, link colours) to anyone reading the report
+# on the web. Keeping them here means the Markdown stays clean for readers and
+# the PDF still gets its layout.
+#
+#   make report-pdf
+title: "An Empirical Comparison of Scheduling Policies in a Distributed Task Queue"
+subtitle: "Latency, deadline compliance, fairness and starvation under controlled load"
+author: "Anish Choudhury"
+date: "September 2026"
+geometry: margin=2.5cm
+fontsize: 11pt
+colorlinks: true
+linkcolor: "1a4b8c"
+urlcolor: "1a4b8c"

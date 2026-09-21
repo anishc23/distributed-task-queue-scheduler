@@ -1,16 +1,10 @@
----
-title: "An Empirical Comparison of Scheduling Policies in a Distributed Task Queue"
-subtitle: "Latency, deadline compliance, fairness and starvation under controlled load"
-author: "Anish Choudhury"
-date: "September 2026"
-geometry: margin=2.5cm
-fontsize: 11pt
-colorlinks: true
-linkcolor: "1a4b8c"
-urlcolor: "1a4b8c"
----
+# An Empirical Comparison of Scheduling Policies in a Distributed Task Queue
 
-# Abstract
+*Latency, deadline compliance, fairness and starvation under controlled load*
+
+Anish Choudhury — September 2026 · [source](https://github.com/anishc23/distributed-task-queue-scheduler) · [PDF](report.pdf)
+
+## Abstract
 
 Most distributed task queues hard-code a single queue discipline, almost always
 arrival order. This report treats the discipline as an experimental variable. A
@@ -37,9 +31,9 @@ Three quantitative claims made earlier in this work were subsequently found to
 be wrong and are corrected here. That process is reported rather than concealed,
 because the corrections are among the more instructive outcomes.
 
-# 1. Introduction
+## 1. Introduction
 
-## 1.1 Research question
+### 1.1 Research question
 
 > How does the choice of scheduling policy affect latency, throughput, deadline
 > compliance, fairness and starvation in a distributed task queue under
@@ -50,7 +44,7 @@ well established. What is measured is their behaviour under controlled
 conditions in one concrete system, together with the conditions under which the
 differences between them matter at all.
 
-## 1.2 Scope and honest framing
+### 1.2 Scope and honest framing
 
 The system is a task queue built on a single Redis instance with a
 single-writer scheduler. The genuinely hard distributed-systems problems —
@@ -59,9 +53,9 @@ are absent or delegated to Redis. It is more accurately described as a
 scheduling study on a Redis-backed queue than as a distributed system, and is
 described that way throughout.
 
-# 2. System design
+## 2. System design
 
-## 2.1 Data flow
+### 2.1 Data flow
 
 ```
 Producer ──XADD──▶ ingress stream
@@ -85,7 +79,7 @@ has already ranked and dispatched. `max_in_flight` bounds dispatched-but-
 unfinished work so the backlog remains in the scheduler's pending set, where the
 policy controls it, rather than in the execution stream, where it would not.
 
-## 2.2 The scheduling abstraction
+### 2.2 The scheduling abstraction
 
 A policy converts a task into an ordering key and nothing else:
 
@@ -104,7 +98,7 @@ in-memory priority queue used by unit tests and the `ZPOPMIN` used in production
 deployed system produces. An integration test verifies the equivalence against a
 live Redis.
 
-## 2.3 Policies
+### 2.3 Policies
 
 **FIFO** orders by submission time. The experimental baseline.
 
@@ -131,7 +125,7 @@ advances on dispatch events rather than by emulating a fluid server; scheduling
 is non-preemptive at whole-task granularity; and `cost(t)` uses the task's
 declared duration, an oracle assumption that Section 5.3 shows is consequential.
 
-## 2.4 Correctness
+### 2.4 Correctness
 
 Four Lua scripts carry the system's correctness, each atomic inside Redis.
 Dispatch performs `ZPOPMIN` and `XADD` in one unit, so a task cannot be lost
@@ -147,9 +141,9 @@ reclaims work that is still legitimately running and two workers race to
 complete the same task. Duplicate completions were suppressed and every task
 appeared exactly once in the results stream.
 
-# 3. Methodology
+## 3. Methodology
 
-## 3.1 Experimental design
+### 3.1 Experimental design
 
 Four schedulers × four workloads, repeated with controlled seeds. Each
 experiment runs in its own Redis key namespace, and every CSV row repeats the
@@ -161,7 +155,7 @@ comes from one seeded source consumed in a fixed order per task. Timing is not
 reproducible, only the workload; repetitions and reported variance are the
 mitigation.
 
-## 3.2 Offered load
+### 3.2 Offered load
 
 Comparing policies across workloads is only meaningful at equal load relative to
 what the system can serve:
@@ -188,7 +182,7 @@ values without moving the stream position. A test asserts byte-identical
 durations, priorities, tenants and deadlines across a ninefold rate change for
 all four workload types.
 
-## 3.3 Repetition counts
+### 3.3 Repetition counts
 
 How many repetitions a workload needs is not uniform. All four were re-run at 25
 repetitions to find out, giving a 5-versus-25 comparison over 96
@@ -214,16 +208,16 @@ The distinguishing property is the task-duration distribution, not the arrival
 pattern: bursty arrivals and skewed tenants both average out over 4,000 tasks; a
 Pareto tail does not.
 
-## 3.4 Environment
+### 3.4 Environment
 
 macOS 26.6 on an Apple M5 (10 cores), Redis 8.10.1 on localhost, Go 1.27. The
 main matrix uses 4 worker processes × 4 slots = 16 slots against a capacity of
 approximately 319 tasks/s. Real-work experiments use 8 slots on 10 cores, for
 reasons given in Section 5.3.
 
-# 4. Results
+## 4. Results
 
-## 4.1 Main matrix
+### 4.1 Main matrix
 
 Twenty-five repetitions per cell at 1.25× offered load, 400 experiments,
 1.6 million tasks. Latency and wait columns are seconds.
@@ -253,7 +247,7 @@ done. The exception is heavy-tailed, where EDF delivers 257.6 tasks/s against
 FIFO's 282.7 and utilisation falls to 0.73 from 0.80 — deferring long tasks
 leaves slots idle at the end of a run while the deferred work drains.
 
-## 4.2 Starvation under strict priority
+### 4.2 Starvation under strict priority
 
 p95 latency by priority level, uniform workload, 25 repetitions pooled over
 100,000 tasks per scheduler:
@@ -269,7 +263,7 @@ Everything above priority 0 completes in about 75 ms while priority 0 waits
 4.4 s. FIFO, EDF and WFQ show a flat 1.0×, because none of them reads the
 priority field.
 
-## 4.3 Fairness under tenant skew
+### 4.3 Fairness under tenant skew
 
 Jain's fairness index is defined over completed service seconds per tenant:
 
@@ -301,7 +295,7 @@ noisy neighbour's backlog and see essentially its latency — equal treatment th
 is not isolation. Reporting the fairness index alone would have shown four
 identical bars and missed the effect entirely.
 
-## 4.4 Policy choice depends on load
+### 4.4 Policy choice depends on load
 
 Seven load levels from 0.5× to 3× capacity, 336 experiments, 1.34 million tasks.
 Spread between best and worst policy p99 on the uniform workload:
@@ -320,7 +314,7 @@ It also carries a practical warning: an evaluation of scheduling policies
 conducted at an arbitrary load may find no difference and conclude, wrongly,
 that policy does not matter.
 
-## 4.5 EDF under overload
+### 4.5 EDF under overload
 
 An earlier revision of this work asserted in three places that EDF "degrades
 sharply under overload", following classical theory, which warns that EDF keeps
@@ -347,7 +341,7 @@ to four times FIFO's and saturates near 9.6 s, because it defers precisely the
 large tasks whose deadlines are furthest away. Miss rate and maximum wait must
 be read as a pair.
 
-## 4.6 The cost of centralisation
+### 4.6 The cost of centralisation
 
 The scheduler is a deliberate single-writer component. Two measurements
 establish what it costs.
@@ -395,9 +389,9 @@ it costs 1.2% and delivers identical ordering, so it is strictly worse than
 having no scheduler. FIFO earns its place here as an experimental baseline, not
 as a deployment choice.
 
-# 5. Threats to validity
+## 5. Threats to validity
 
-## 5.1 Corrections made during this study
+### 5.1 Corrections made during this study
 
 Three quantitative claims were found to be wrong after more data was collected.
 
@@ -415,7 +409,7 @@ the correct figure is 8.4×. The direction held; the magnitude was inflated more
 than threefold, and the sleep-mode value it was measured against was a lucky
 draw — 0.099 ± 0.183 at n=25, a standard deviation larger than its own mean.
 
-## 5.2 Simulated execution
+### 5.2 Simulated execution
 
 Workers sleep for a task's declared duration by default. This makes task sizes
 exactly controllable and removes application variance, at the cost that a
@@ -423,7 +417,7 @@ sleeping worker consumes no CPU: N slots always deliver N-way parallelism
 regardless of core count, and utilisation measures slot occupancy rather than
 work.
 
-## 5.3 The sleep model is not neutral
+### 5.3 The sleep model is not neutral
 
 To test whether the conclusions survive real work, an execution mode was added
 that burns each task's duration in chained SHA-256 — chosen because it is
@@ -473,7 +467,7 @@ be read as an upper bound attainable only with perfect cost information. The WFQ
 fairness results are not subject to that caveat: they were re-tested under real
 work and improved.
 
-## 5.4 Remaining limitations
+### 5.4 Remaining limitations
 
 1. **Single-node Redis.** No cluster, no failover. Redis failure modes are out of
    scope, and the Lua scripts, while declaring all their keys, have not been
@@ -491,7 +485,7 @@ work and improved.
 7. **The real-work comparison is narrow**: three of four workloads, a single
    offered load, one machine's core count.
 
-# 6. Conclusions
+## 6. Conclusions
 
 **Scheduling policy matters in a narrow band.** The spread between best and
 worst policy moves from 0.1% below capacity to 93% at capacity and back to 1.1%
@@ -518,7 +512,7 @@ whether enough repetitions have been run, ranked the most-converged workload
 worst and the least-converged workload well. The magnitude of shift in the point
 estimate is the diagnostic that works.
 
-## 6.1 Future work
+### 6.1 Future work
 
 Cost *estimation* from observed durations rather than declared ones is the
 natural next step, and Section 5.3 predicts it would recover much of EDF's lost
@@ -528,7 +522,7 @@ to quantify what self-clocking costs; a tenant-sharded scheduler to lift the
 single-writer bound; Redis failover and partition injection; and latency-aware
 autoscaling driven by queue depth rather than CPU.
 
-# Appendix A: Reproducing these results
+## Appendix A: Reproducing these results
 
 ```bash
 make redis-up
@@ -545,7 +539,7 @@ make plots RUN=main && make sweep-plots RUN=sweep-loads
 Source, configurations and full result schemas:
 <https://github.com/anishc23/distributed-task-queue-scheduler>
 
-# Appendix B: Experiment inventory
+## Appendix B: Experiment inventory
 
 | run | experiments | tasks |
 | --- | ---: | ---: |

@@ -308,7 +308,14 @@ sweep-plots: ## Plot load curves from a sweep: make sweep-plots RUN=<run id>
 report-pdf: ## Rebuild docs/report.pdf from docs/report.md (needs pandoc + typst)
 	@command -v pandoc >/dev/null || { echo "pandoc not installed: brew install pandoc typst"; exit 1; }
 	@command -v typst  >/dev/null || { echo "typst not installed: brew install typst"; exit 1; }
-	pandoc docs/report.md -o docs/report.pdf --pdf-engine=typst --toc --toc-depth=2
+	@mkdir -p $(BIN)
+	@# The Markdown carries its own H1 title so it reads well on GitHub. The PDF
+	@# gets its title from the metadata file instead, so strip everything before
+	@# the first section heading to avoid printing the title twice.
+	@awk 'f{print} /^## /{if(!f){f=1;print}}' docs/report.md > $(BIN)/report-body.md
+	pandoc $(BIN)/report-body.md -o docs/report.pdf --pdf-engine=typst \
+		--metadata-file=docs/report-meta.yaml --toc --toc-depth=2
+	@rm -f $(BIN)/report-body.md
 	@echo "wrote docs/report.pdf"
 
 .PHONY: docs-charts
