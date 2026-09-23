@@ -242,3 +242,110 @@ func TestConfigJSONRoundTrips(t *testing.T) {
 		t.Fatalf("a config that round-tripped through JSON must still validate: %v", err)
 	}
 }
+
+// Leader election is on by default. A scheduler that dispatches without first
+// checking whether another one is already doing so is unsafe, and a default
+// that is only correct when the operator remembers to change it is the wrong
+// default.
+func TestLeaderElectionIsOnByDefault(t *testing.T) {
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("load defaults: %v", err)
+	}
+	le := cfg.Scheduler.LeaderElection
+	if !le.Enabled {
+		t.Error("leader election is off by default; two schedulers would silently corrupt policy state")
+	}
+	if le.RenewInterval.D() >= le.TTL.D() {
+		t.Errorf("default renew interval %s is not shorter than the ttl %s, so a single slow round trip would depose a healthy leader",
+			le.RenewInterval, le.TTL)
+	}
+}
+
+// Enabled is a bool, so "unset" and "explicitly false" are the same value once
+// decoded. Defaults must therefore never be backfilled onto it, or turning
+// election off in a config file would quietly do nothing.
+func TestLeaderElectionCanBeTurnedOffInAFile(t *testing.T) {
+	path := writeConfig(t, `
+scheduler:
+  leader_election:
+    enabled: false
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.Scheduler.LeaderElection.Enabled {
+		t.Fatal("enabled: false was overwritten by the default; an operator who turned election off would still be running it")
+	}
+	// The intervals are still backfilled, so turning it on later needs no
+	// further edits.
+	if cfg.Scheduler.LeaderElection.TTL.D() <= 0 {
+		t.Error("ttl was not backfilled")
+	}
+}
+
+// Omitting the block entirely is not a request to disable anything.
+func TestOmittingLeaderElectionKeepsItOn(t *testing.T) {
+	path := writeConfig(t, `
+scheduler:
+  policy: wfq
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !cfg.Scheduler.LeaderElection.Enabled {
+		t.Fatal("a config file that says nothing about leader election turned it off")
+	}
+}
+
+func TestLeaderElectionValidation(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "renew at least as long as the ttl",
+			body: "scheduler:\n  leader_election:\n    enabled: true\n    ttl: 1s\n    renew_interval: 1s\n",
+			want: "renew_interval",
+		},
+		{
+			name: "zero retry interval",
+			body: "scheduler:\n  leader_election:\n    enabled: true\n    retry_interval: -1s\n",
+			want: "retry_interval",
+		},
+		{
+			name: "zero ingress reclaim min idle",
+			body: "scheduler:\n  ingest_reclaim_min_idle: -1s\n",
+			want: "ingest_reclaim_min_idle",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := config.Load(writeConfig(t, tc.body))
+			if err == nil {
+				t.Fatalf("expected a validation error mentioning %q", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not name the offending field %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// The scheduler holds an ingress entry for microseconds; a worker holds an exec
+// entry for as long as the task runs. Reclaiming the two on the same timescale
+// would either duplicate real work or leave stranded tasks sitting for far
+// longer than necessary.
+func TestIngressReclaimIsFarMoreAggressiveThanExecRecovery(t *testing.T) {
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("load defaults: %v", err)
+	}
+	if cfg.Scheduler.IngestReclaimMinIdle.D() >= cfg.Recovery.MinIdle.D() {
+		t.Errorf("ingest reclaim min idle %s is not shorter than the exec visibility timeout %s",
+			cfg.Scheduler.IngestReclaimMinIdle, cfg.Recovery.MinIdle)
+	}
+}

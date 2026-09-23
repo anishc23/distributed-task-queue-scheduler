@@ -13,6 +13,23 @@ spec:
       port: 9101
       targetPort: metrics
 ---
+# Keeps a standby available during voluntary disruption. Without it a node
+# drain can evict both replicas at once, and the queue then waits out a full
+# lease TTL with nothing dispatching -- the exact outage the second replica
+# exists to avoid.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: scheduler
+  labels:
+    app.kubernetes.io/name: scheduler
+    app.kubernetes.io/part-of: taskqueue
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: scheduler
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -22,12 +39,27 @@ metadata:
     app.kubernetes.io/part-of: taskqueue
 spec:
   # The scheduler is a single-writer component: it owns the pending index and
-  # the WFQ virtual clock. Running more than one replica would let two processes
-  # rank tasks against divergent virtual time, so replicas is pinned to 1 and
-  # the strategy is Recreate to avoid a brief overlap during rollouts.
-  replicas: 1
+  # the policy's virtual clock. Two replicas ranking concurrently would advance
+  # two divergent clocks and overwrite each other's state, and nothing about
+  # that failure is loud.
+  #
+  # That invariant is enforced by the leader lease in Redis, not by this number.
+  # Exactly one replica holds the lease and dispatches; the other stands by and
+  # takes over within one lease TTL of a crash, or immediately after a clean
+  # shutdown. Because the guarantee lives in the system rather than in the
+  # manifest, a rolling update is safe: the surge pod simply stands by until the
+  # outgoing leader releases its lease.
+  #
+  # Before the lease existed this said replicas: 1 with strategy: Recreate,
+  # which meant every rollout took a full dispatch outage while the old pod
+  # terminated and the new one started, and a scale-up nobody thought twice
+  # about would silently corrupt WFQ.
+  replicas: 2
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
   selector:
     matchLabels:
       app.kubernetes.io/name: scheduler
@@ -38,6 +70,16 @@ spec:
         app.kubernetes.io/part-of: taskqueue
     spec:
       terminationGracePeriodSeconds: 30
+      # Prefer, not require: a single-node kind cluster has nowhere to spread
+      # to, and a hard constraint would leave the standby permanently pending
+      # in exactly the environment this repo tells you to try first.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: scheduler
       containers:
         - name: scheduler
           image: distributed-task-queue:dev

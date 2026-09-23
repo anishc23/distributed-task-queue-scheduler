@@ -27,6 +27,34 @@ results/
         └── summary_table.md
 ```
 
+A failover run (`make failover`) writes a different, much smaller layout,
+because it measures the scheduler rather than the schedulers:
+
+```
+results/
+└── <run id>/
+    ├── failover.csv                # one row per trial
+    └── plots/                      # created by scripts/plot_failover.py
+        ├── failover_outage.png
+        ├── failover_ttl_sensitivity.png    # only with --ttl-runs
+        └── failover_table.csv
+```
+
+`failover.csv` columns worth knowing:
+
+| column | meaning |
+| --- | --- |
+| `arm` | `none`, `graceful`, `crash` or `single` |
+| `outage_ms` | dispatch gap bracketing the kill; **`-1` means censored**, not zero |
+| `recovered` | false when no dispatch ever followed the kill |
+| `max_gap_ms` | largest gap anywhere in the trial, the floor to read `outage_ms` against |
+| `leaders_before_kill` | sum of `tq_scheduler_is_leader` across replicas; anything but 1 invalidates the trial |
+| `duplicate_completions` | should be 0: a failover must not re-run finished work |
+
+Treat `outage_ms = -1` as censored data. Averaging it as a number is the single
+easiest way to misreport this experiment, which is why the plotting script draws
+the `single` arm as a hatched bar spanning the axis instead of a value.
+
 Every row in every CSV carries `run_id`, `scheduler`, `workload`, `repetition`
 and `seed`, so concatenating files from different runs can never silently mix
 experiments. Each experiment also runs against its own Redis key namespace

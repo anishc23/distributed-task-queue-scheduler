@@ -21,6 +21,14 @@
 // sustains D dispatches per second can keep D * mean_execution_seconds worker
 // slots busy before it, rather than the workers, is the constraint.
 //
+// --epoch controls whether the fencing guard is live. At the default of 0,
+// leader election is off and the guard short-circuits without touching Redis,
+// which is the number comparable to measurements taken before the lease
+// existed. At any positive value the guard reads the fence key inside every
+// admit and dispatch script, which is what a deployment with election enabled
+// actually pays. Running both answers "what does enforcing the single-writer
+// invariant cost?" with a measurement rather than an assurance.
+//
 // Usage:
 //
 //	schedbench --tasks 20000
@@ -45,6 +53,7 @@ import (
 	"github.com/anishc23/distributed-task-queue/internal/cli"
 	"github.com/anishc23/distributed-task-queue/internal/config"
 	"github.com/anishc23/distributed-task-queue/internal/domain"
+	"github.com/anishc23/distributed-task-queue/internal/lease"
 	"github.com/anishc23/distributed-task-queue/internal/metrics"
 	"github.com/anishc23/distributed-task-queue/internal/scheduler"
 	"github.com/anishc23/distributed-task-queue/internal/scheduler/policy"
@@ -61,6 +70,10 @@ type result struct {
 	RatePerS  float64
 	SlotsFed  float64 // worker slots this rate could keep busy at meanExecMS
 	MeanExecM float64
+	// Epoch records whether the fence was live for this measurement. Without
+	// it a CSV could pool fenced and unfenced numbers, which is exactly the
+	// comparison the flag exists to make.
+	Epoch int64
 }
 
 func main() {
@@ -74,6 +87,7 @@ func main() {
 	meanExec := fs.Float64("mean-exec-ms", 50, "mean task execution time used to convert a dispatch rate into worker slots")
 	csvPath := fs.String("csv", "", "also write the measurements to this CSV file")
 	skipEngine := fs.Bool("skip-engine", false, "skip the end-to-end engine phase")
+	epoch := fs.Int64("epoch", 0, "leadership epoch to stamp on guarded operations; 0 disables the fence, any positive value exercises it")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "schedbench measures the scheduler's dispatch ceiling with no workers attached.\n\nUsage:\n")
 		fs.PrintDefaults()
@@ -147,14 +161,14 @@ func main() {
 			cli.Fail(log, "cannot build policy", err)
 		}
 
-		r, err := measureAdmit(ctx, br, pol, specs, *meanExec)
+		r, err := measureAdmit(ctx, br, pol, specs, *meanExec, *epoch)
 		if err != nil {
 			cli.Fail(log, "admit phase failed", err)
 		}
 		results = append(results, r)
 
 		for _, b := range batches {
-			r, err := measureDispatch(ctx, br, pol, specs, b, *meanExec)
+			r, err := measureDispatch(ctx, br, pol, specs, b, *meanExec, *epoch)
 			if err != nil {
 				cli.Fail(log, "dispatch phase failed", err)
 			}
@@ -162,7 +176,7 @@ func main() {
 		}
 
 		if !*skipEngine {
-			r, err := measureEngine(ctx, br, cfg, name, specs, *meanExec, log)
+			r, err := measureEngine(ctx, br, cfg, name, specs, *meanExec, log, *epoch)
 			if err != nil {
 				cli.Fail(log, "engine phase failed", err)
 			}
@@ -199,7 +213,7 @@ func buildSpecs(cfg *config.Config, n int) []domain.Task {
 
 // measureAdmit times the admission path: rank the task with the policy, then run
 // the atomic admit script. One Redis round trip per task.
-func measureAdmit(ctx context.Context, br *broker.Broker, pol policy.Policy, tasks []domain.Task, meanExec float64) (result, error) {
+func measureAdmit(ctx context.Context, br *broker.Broker, pol policy.Policy, tasks []domain.Task, meanExec float64, epoch int64) (result, error) {
 	if err := br.Reset(ctx); err != nil {
 		return result{}, err
 	}
@@ -208,18 +222,18 @@ func measureAdmit(ctx context.Context, br *broker.Broker, pol policy.Policy, tas
 	}
 	start := time.Now()
 	for _, t := range tasks {
-		if _, err := br.Admit(ctx, t, pol.Rank(t)); err != nil {
+		if _, err := br.Admit(ctx, t, pol.Rank(t), epoch); err != nil {
 			return result{}, err
 		}
 	}
 	elapsed := time.Since(start)
-	return newResult("admit", pol.Name(), 0, len(tasks), elapsed, meanExec), nil
+	return newResult("admit", pol.Name(), 0, len(tasks), elapsed, meanExec, epoch), nil
 }
 
 // measureDispatch times the dispatch path at one batch size: repeatedly run the
 // atomic ZPOPMIN + XADD script until the pending set is empty. max_in_flight is
 // unlimited because there are no workers to acknowledge anything.
-func measureDispatch(ctx context.Context, br *broker.Broker, pol policy.Policy, tasks []domain.Task, batch int, meanExec float64) (result, error) {
+func measureDispatch(ctx context.Context, br *broker.Broker, pol policy.Policy, tasks []domain.Task, batch int, meanExec float64, epoch int64) (result, error) {
 	if err := br.Reset(ctx); err != nil {
 		return result{}, err
 	}
@@ -228,7 +242,7 @@ func measureDispatch(ctx context.Context, br *broker.Broker, pol policy.Policy, 
 	}
 	// Setup, deliberately outside the measured window.
 	for _, t := range tasks {
-		if _, err := br.Admit(ctx, t, pol.Rank(t)); err != nil {
+		if _, err := br.Admit(ctx, t, pol.Rank(t), epoch); err != nil {
 			return result{}, err
 		}
 	}
@@ -236,7 +250,7 @@ func measureDispatch(ctx context.Context, br *broker.Broker, pol policy.Policy, 
 	start := time.Now()
 	dispatched := 0
 	for dispatched < len(tasks) {
-		batchOut, err := br.Dispatch(ctx, batch, 0, time.Now())
+		batchOut, err := br.Dispatch(ctx, batch, 0, time.Now(), epoch)
 		if err != nil {
 			return result{}, err
 		}
@@ -249,13 +263,17 @@ func measureDispatch(ctx context.Context, br *broker.Broker, pol policy.Policy, 
 		dispatched += len(batchOut)
 	}
 	elapsed := time.Since(start)
-	return newResult("dispatch", pol.Name(), batch, dispatched, elapsed, meanExec), nil
+	return newResult("dispatch", pol.Name(), batch, dispatched, elapsed, meanExec, epoch), nil
 }
 
 // measureEngine times the whole scheduler process: the ingest loop draining a
 // pre-filled ingress stream and the dispatch loop draining the pending set,
 // running concurrently as they do in production, with no workers attached.
-func measureEngine(ctx context.Context, br *broker.Broker, cfg *config.Config, policyName string, tasks []domain.Task, meanExec float64, log *slog.Logger) (result, error) {
+// measureEngine times the whole scheduler process against a pre-filled ingress
+// stream. With a positive epoch it runs a real lease as well, so the number
+// includes everything a deployed scheduler with election enabled pays:
+// campaigning, renewal, and the fence check inside every admit and dispatch.
+func measureEngine(ctx context.Context, br *broker.Broker, cfg *config.Config, policyName string, tasks []domain.Task, meanExec float64, log *slog.Logger, epoch int64) (result, error) {
 	if err := br.Reset(ctx); err != nil {
 		return result{}, err
 	}
@@ -283,6 +301,23 @@ func measureEngine(ctx context.Context, br *broker.Broker, cfg *config.Config, p
 	}
 	scfg := cfg.Scheduler
 	scfg.MaxInFlight = 0 // nothing acknowledges, so a cap would deadlock the loop
+
+	var schedLease *lease.Lease
+	if epoch > 0 {
+		schedLease, err = lease.New(lease.Options{
+			Redis:  br.Redis(),
+			Keys:   lease.Keys{Holder: br.Keys().Leader, Epoch: br.Keys().LeaderEpoch},
+			Owner:  "ceiling",
+			TTL:    scfg.LeaderElection.TTL.D(),
+			Renew:  scfg.LeaderElection.RenewInterval.D(),
+			Retry:  scfg.LeaderElection.RetryInterval.D(),
+			Logger: log,
+		})
+		if err != nil {
+			return result{}, err
+		}
+	}
+
 	engine, err := scheduler.NewEngine(scheduler.EngineOptions{
 		Broker:   br,
 		Policy:   pol,
@@ -290,6 +325,7 @@ func measureEngine(ctx context.Context, br *broker.Broker, cfg *config.Config, p
 		Logger:   log,
 		Metrics:  metrics.New(metrics.Options{Component: metrics.ComponentScheduler, Scheduler: policyName}),
 		Consumer: "ceiling",
+		Lease:    schedLease,
 	})
 	if err != nil {
 		return result{}, err
@@ -324,10 +360,10 @@ func measureEngine(ctx context.Context, br *broker.Broker, cfg *config.Config, p
 	}
 	cancel()
 	<-done
-	return newResult("engine", policyName, cfg.Scheduler.DispatchBatch, len(tasks), elapsed, meanExec), nil
+	return newResult("engine", policyName, cfg.Scheduler.DispatchBatch, len(tasks), elapsed, meanExec, epoch), nil
 }
 
-func newResult(phase, pol string, batch, tasks int, elapsed time.Duration, meanExec float64) result {
+func newResult(phase, pol string, batch, tasks int, elapsed time.Duration, meanExec float64, epoch int64) result {
 	rate := 0.0
 	if elapsed > 0 {
 		rate = float64(tasks) / elapsed.Seconds()
@@ -337,6 +373,7 @@ func newResult(phase, pol string, batch, tasks int, elapsed time.Duration, meanE
 		Elapsed: elapsed, RatePerS: rate,
 		SlotsFed:  rate * (meanExec / 1000),
 		MeanExecM: meanExec,
+		Epoch:     epoch,
 	}
 }
 
@@ -417,7 +454,7 @@ func writeCSV(path string, rs []result) error {
 	}
 	defer f.Close()
 	w := csv.NewWriter(f)
-	if err := w.Write([]string{"phase", "policy", "batch", "tasks", "elapsed_s", "rate_tasks_per_s", "worker_slots_fed", "mean_exec_ms"}); err != nil {
+	if err := w.Write([]string{"phase", "policy", "batch", "tasks", "elapsed_s", "rate_tasks_per_s", "worker_slots_fed", "mean_exec_ms", "epoch", "fenced"}); err != nil {
 		return err
 	}
 	for _, r := range rs {
@@ -427,6 +464,8 @@ func writeCSV(path string, rs []result) error {
 			strconv.FormatFloat(r.RatePerS, 'f', 3, 64),
 			strconv.FormatFloat(r.SlotsFed, 'f', 3, 64),
 			strconv.FormatFloat(r.MeanExecM, 'f', 3, 64),
+			strconv.FormatInt(r.Epoch, 10),
+			strconv.FormatBool(r.Epoch > 0),
 		}); err != nil {
 			return err
 		}

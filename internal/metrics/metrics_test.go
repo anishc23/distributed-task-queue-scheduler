@@ -41,6 +41,8 @@ func TestComponentsExposeDisjointInstruments(t *testing.T) {
 		"tq_tasks_admitted_total", "tq_tasks_dispatched_total", "tq_pending_tasks",
 		"tq_inflight_tasks", "tq_longest_pending_wait_seconds", "tq_max_observed_wait_seconds",
 		"tq_recovery_reclaimed_total", "tq_dispatch_errors_total", "tq_duplicate_admissions_total",
+		"tq_ingress_reclaimed_total", "tq_scheduler_is_leader", "tq_scheduler_leader_epoch",
+		"tq_scheduler_leader_transitions_total", "tq_scheduler_fenced_operations_total",
 	}
 	workerOnly := []string{
 		"tq_tasks_completed_total", "tq_task_failures_total", "tq_duplicate_completions_total",
@@ -200,4 +202,58 @@ func bodyOf(t *testing.T, url string) string {
 		t.Fatalf("read %s: %v", url, err)
 	}
 	return string(b)
+}
+
+// gaugeValue reads a single unlabelled gauge out of the registry. The gather
+// helper above returns family names only, which is all the disjointness test
+// needs; leadership is about the values.
+func gaugeValue(t *testing.T, m *metrics.Metrics, name string) (float64, bool) {
+	t.Helper()
+	families, err := m.Registry().Gather()
+	if err != nil {
+		t.Fatalf("gather: %v", err)
+	}
+	for _, f := range families {
+		if f.GetName() != name {
+			continue
+		}
+		for _, metric := range f.GetMetric() {
+			if g := metric.GetGauge(); g != nil {
+				return g.GetValue(), true
+			}
+		}
+	}
+	return 0, false
+}
+
+// A standby is not a broken scheduler, and the metric has to say so in a way an
+// operator can alert on. The useful expression is
+// sum(tq_scheduler_is_leader) != 1, which catches a leaderless queue and a
+// split brain at once — and that only works if every replica reports a value
+// rather than only the leader.
+func TestLeadershipGaugesReportBothStates(t *testing.T) {
+	m := metrics.New(metrics.Options{Component: metrics.ComponentScheduler, Scheduler: "wfq"})
+
+	if v, ok := gaugeValue(t, m, "tq_scheduler_is_leader"); !ok || v != 0 {
+		t.Errorf("a scheduler that has not yet led reports is_leader = %v (present=%v), want 0", v, ok)
+	}
+
+	m.SetLeader(true, 7)
+	if v, _ := gaugeValue(t, m, "tq_scheduler_is_leader"); v != 1 {
+		t.Errorf("is_leader = %v after acquiring leadership, want 1", v)
+	}
+	if v, _ := gaugeValue(t, m, "tq_scheduler_leader_epoch"); v != 7 {
+		t.Errorf("leader epoch = %v, want 7", v)
+	}
+
+	// Demotion must clear the epoch too. A standby still advertising its old
+	// epoch makes "which replica is newest?" unanswerable, which is the one
+	// question these gauges exist to answer during a failover.
+	m.SetLeader(false, 0)
+	if v, _ := gaugeValue(t, m, "tq_scheduler_is_leader"); v != 0 {
+		t.Errorf("is_leader = %v after losing leadership, want 0", v)
+	}
+	if v, _ := gaugeValue(t, m, "tq_scheduler_leader_epoch"); v != 0 {
+		t.Errorf("a demoted scheduler still advertises epoch %v", v)
+	}
 }

@@ -45,11 +45,21 @@ type Metrics struct {
 	InFlightTasks       prometheus.Gauge
 	LongestPendingWait  prometheus.Gauge
 	MaxObservedWait     prometheus.Gauge
+	IngressReclaimed    prometheus.Counter
 	RecoveryReclaimed   prometheus.Counter
 	TaskRetries         prometheus.Counter
 	TasksDeadLettered   prometheus.Counter
 	DispatchErrors      prometheus.Counter
 	DuplicateAdmissions prometheus.Counter
+
+	// Leadership. Every scheduler replica exposes these, which is the point:
+	// the interesting alert is not "is_leader == 0" on one replica but
+	// sum(tq_scheduler_is_leader) != 1 across the whole Deployment, which
+	// catches both a leaderless queue and a split brain with one expression.
+	IsLeader          prometheus.Gauge
+	LeaderEpoch       prometheus.Gauge
+	LeaderTransitions prometheus.Counter
+	FencedOperations  prometheus.Counter
 
 	// Worker-side.
 	TasksCompleted       *prometheus.CounterVec
@@ -119,6 +129,8 @@ func New(opts Options) *Metrics {
 		"Age of the oldest task currently pending, in seconds.")
 	m.MaxObservedWait = f.gauge("tq_max_observed_wait_seconds",
 		"Longest pending wait observed since this process started, in seconds. Starvation indicator.")
+	m.IngressReclaimed = f.counter("tq_ingress_reclaimed_total",
+		"Ingress entries reclaimed from a scheduler that died before acknowledging them. Sustained non-zero values mean schedulers are dying mid-batch.")
 	m.RecoveryReclaimed = f.counter("tq_recovery_reclaimed_total",
 		"Execution-stream entries reclaimed by the recovery loop after exceeding the visibility timeout.")
 	// Retries and dead letters are produced by the recovery loop in the
@@ -132,6 +144,14 @@ func New(opts Options) *Metrics {
 		"Errors raised by the dispatch loop.")
 	m.DuplicateAdmissions = f.counter("tq_duplicate_admissions_total",
 		"Ingress entries rejected because the task was already known.")
+	m.IsLeader = f.gauge("tq_scheduler_is_leader",
+		"1 when this scheduler holds the dispatch lease, 0 when it is standing by.")
+	m.LeaderEpoch = f.gauge("tq_scheduler_leader_epoch",
+		"Fencing token of this scheduler's current leadership term; 0 when not leading.")
+	m.LeaderTransitions = f.counter("tq_scheduler_leader_transitions_total",
+		"Leadership changes observed by this process, counting both acquisitions and losses.")
+	m.FencedOperations = f.counter("tq_scheduler_fenced_operations_total",
+		"Writes refused because a newer scheduler epoch had already taken over.")
 
 	f = work
 	m.TasksCompleted = f.counterVec("tq_tasks_completed_total",
@@ -166,6 +186,23 @@ func New(opts Options) *Metrics {
 
 // Registry exposes the registry so a process can serve it.
 func (m *Metrics) Registry() *prometheus.Registry { return m.registry }
+
+// SetLeader records a leadership transition on the gauges.
+//
+// The epoch is exposed as a gauge rather than a counter because it is a
+// term identifier, not a rate: increase(tq_scheduler_leader_epoch) is
+// meaningless, whereas comparing the value across replicas tells you which one
+// believes it is newest. Prometheus float64 represents these exactly well past
+// any plausible number of failovers.
+func (m *Metrics) SetLeader(leader bool, epoch int64) {
+	if leader {
+		m.IsLeader.Set(1)
+		m.LeaderEpoch.Set(float64(epoch))
+		return
+	}
+	m.IsLeader.Set(0)
+	m.LeaderEpoch.Set(0)
+}
 
 // ObserveWait records a pending wait and keeps the running maximum, which is the
 // starvation signal for priority scheduling.

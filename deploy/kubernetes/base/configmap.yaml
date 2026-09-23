@@ -41,6 +41,20 @@ data:
         E: 1
       default_tenant_weight: 1
       state_flush_interval: 1s
+      # Exactly one replica dispatches; the rest stand by. The lease is what
+      # makes running two schedulers safe, so this must stay on wherever
+      # replicas is greater than one.
+      #
+      # ttl bounds the dispatch outage after a hard crash: a standby cannot
+      # safely take over until Redis has expired the key. A clean shutdown
+      # releases the lease and costs nothing, so this number only governs
+      # crashes, not rollouts. renew_interval gives the leader three attempts
+      # to ride out a slow Redis round trip before it is deposed for no reason.
+      leader_election:
+        enabled: true
+        ttl: 5s
+        renew_interval: 1500ms
+        retry_interval: 1s
 
     worker:
       concurrency: 4

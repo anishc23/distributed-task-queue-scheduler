@@ -303,6 +303,94 @@ What to expect:
   and healthy slow tasks get duplicated, too long and genuine failures take ages
   to recover.
 
+## Scheduler failover experiments
+
+`cmd/failoverbench` measures what a scheduler failure costs. The rest of this
+work measures the *throughput* cost of centralising scheduling; this measures
+the *availability* cost, which is the other half of the argument.
+
+```bash
+make failover REPETITIONS=15
+make failover-plots RUN=failover
+```
+
+**Nothing about the failure is simulated.** The tool builds the scheduler
+binary, starts real processes with `os/exec` in their own process groups, and
+kills one with a real signal. Workers and the load generator run in-process
+against the same Redis.
+
+### How the outage is defined
+
+The dispatch script stamps `dispatched_at_ms` on every execution-stream entry,
+which is the scheduler's own record of when it acted. The outage is the gap
+between the last dispatch at or before the kill and the first one after it. This
+is deliberately narrow: it is a property of the stream, not a wall-clock
+inference from bookkeeping inside the measuring process.
+
+When no dispatch ever follows the kill, the trial is **censored** rather than
+recorded as a large number. The `single` arm is entirely censored by
+construction, and plotting it as a finite bar would be the most misleading thing
+the analysis could do.
+
+### The arms
+
+| arm | replicas | signal | question |
+| --- | ---: | --- | --- |
+| `none` | 2 | — | What is the natural gap between dispatches at this load? Every other arm is read against this floor. |
+| `graceful` | 2 | `SIGTERM` | What does a rollout cost? The leader releases the lease on the way out. |
+| `crash` | 2 | `SIGKILL` | What does a crash cost? Nothing is released, so Redis must expire the key. |
+| `single` | 1 | `SIGKILL` | What is the lease buying? Nothing takes over. |
+
+### Why the kill time is jittered
+
+The outage after a crash is the lease TTL minus however long ago the leader last
+renewed. With a fixed kill offset, every trial kills at the same phase of the
+renewal cycle and the measured outage collapses to a single number — real, but
+not the distribution. The kill is therefore jittered uniformly over exactly one
+renewal interval, from a seeded generator so a run is still reproducible. The
+expected spread is `[TTL − renew_interval, TTL]`.
+
+This was not how the experiment was first written. The first version used a
+fixed offset, produced outages within 4 ms of each other across fifteen trials,
+and the suspiciously tight clustering is what exposed the bias.
+
+### Run it on an idle machine that will not sleep
+
+The outage is a wall-clock timing measurement made by killing processes, so
+anything else competing for the CPU lands directly in the number. Two separate
+runs of this experiment were discarded for exactly that reason: one because a
+race-detector test suite was started alongside it, and one because the laptop
+idle-slept partway through an unattended run and produced two trials reporting
+seventeen-minute "outages".
+
+The second failure is now detected rather than averaged in. A crash outage is
+bounded above by the lease TTL by construction, so the harness flags any trial
+whose outage exceeds five times the TTL as `suspect`, logs it as an error, and
+the plotting script drops those trials while printing what it dropped. The
+`make failover` target also runs under `caffeinate -dims` where that exists.
+
+### The invariant check
+
+Every trial scrapes `tq_scheduler_is_leader` from all replicas once the queue is
+running and refuses to proceed unless the sum is exactly 1. This means every
+reported trial carries evidence that the single-writer invariant held while it
+ran, rather than the invariant being asserted only in unit tests. The plotting
+script re-checks the same column and refuses to chart a run that violates it.
+
+### What this experiment found
+
+The failover experiment was not only a measurement. Every killed-leader trial
+reported exactly one task short of the 4,000 submitted, which led to a genuine
+durability bug: `XREADGROUP` with `>` only delivers entries nobody has seen, so
+an ingress entry the dead leader read and never acknowledged belongs to a
+consumer name that never returns. The task was accepted and then never
+scheduled — not pending, not in flight, not dead-lettered, counted nowhere.
+
+The fix is an `XAUTOCLAIM` pass over the ingress group, run by the leader, with
+`scheduler.ingest_reclaim_min_idle` defaulting to 2s. The same trials now
+complete all 4,000 tasks. See `TestPromotedEngineReclaimsTheDeadLeadersIngressEntries`,
+which was confirmed to fail with the reclaim loop removed.
+
 ## Known limitations
 
 1. **Simulated execution.** Workers sleep rather than compute by default.
@@ -320,12 +408,16 @@ What to expect:
 3. **Non-preemptive, whole-task granularity.** Once dispatched, a task runs to
    completion. Fairness is only approximate over horizons shorter than the
    largest task, which matters most on the heavy-tailed workload.
-4. **Single scheduler process.** The scheduler is a single writer, so scheduling
-   throughput is bounded by one process and one Redis instance. This bounds the
-   scale at which these results apply; it is not a claim about how the policies
-   would behave in a sharded scheduler.
-5. **Single-node Redis.** No cluster, no failover. Redis is assumed available;
-   Redis failure modes are out of scope.
+4. **One scheduler dispatches at a time.** Extra replicas buy availability, not
+   throughput: the lease guarantees exactly one leader, so scheduling capacity
+   is still bounded by one process and one Redis instance. This bounds the scale
+   at which these results apply; it is not a claim about how the policies would
+   behave in a sharded scheduler.
+5. **Single-node Redis.** No cluster, no failover. Redis is assumed available,
+   and Redis failure modes are out of scope. This matters more now than it did
+   before: the fencing argument assumes Redis does not lose acknowledged writes,
+   which a Sentinel failover can violate. Scheduler failure is measured; store
+   failure is not.
 6. **Latency is measured in wall-clock time on a shared machine.** Repetitions
    and reported variance are the mitigation, not a fix.
 7. **Deadline misses are computed over completed tasks.** A dead-lettered task
@@ -346,3 +438,8 @@ What to expect:
   how far the sleep-based conclusions transfer.
 - Latency-aware autoscaling driven by `tq_pending_tasks` and
   `tq_longest_pending_wait_seconds` rather than CPU.
+- Redis failover and network-partition injection. Scheduler failure is now
+  measured; the store the fencing argument depends on is not.
+- Failover under load rather than beside it: every trial here kills the leader
+  while the queue is in steady state, so the measured outage is the time to
+  resume dispatching, not the time to work off the backlog the outage created.

@@ -23,7 +23,15 @@ import (
 // validation can use them without importing this one.
 
 // cpuSink prevents the compiler from eliminating the calibration and burn
-// loops, whose results are otherwise unused.
+// loops, whose results are otherwise unused. Stores to a package-level variable
+// are never dropped, which is exactly the property wanted here.
+//
+// It is written and never read on purpose. Reading it would be the bug: the
+// only job of this variable is to make the work observable to the compiler,
+// which is why staticcheck's unused-variable check is suppressed below rather
+// than satisfied by inventing a reader.
+//
+//lint:ignore U1000 deliberate write-only sink; see the comment above.
 var cpuSink uint64
 
 // burn performs iters rounds of SHA-256 chaining. SHA-256 is used because it is

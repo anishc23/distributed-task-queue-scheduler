@@ -87,9 +87,21 @@ Cluster '$CLUSTER' is ready.
   Scale workers:
     kubectl --context kind-$CLUSTER -n taskqueue scale deployment/worker --replicas=6
 
+  Which scheduler is leading (two replicas, one dispatches):
+    kubectl --context kind-$CLUSTER -n taskqueue exec deploy/scheduler -- \\
+      tqctl status --config /etc/taskqueue/config.yaml | grep leader
+
   Scheduler metrics:
+    # The Service fronts both replicas, so this may reach the standby and show
+    # near-zero counters with tq_scheduler_is_leader 0. That is correct, not a
+    # fault. Port-forward a named pod to pin it to one replica.
     kubectl --context kind-$CLUSTER -n taskqueue port-forward svc/scheduler 9101:9101
     curl -s localhost:9101/metrics | grep '^tq_'
+
+  Watch a failover (delete the pod tqctl named above; the standby takes over
+  within one lease TTL, or immediately on a graceful delete):
+    kubectl --context kind-$CLUSTER -n taskqueue get pods -l app.kubernetes.io/name=scheduler
+    kubectl --context kind-$CLUSTER -n taskqueue delete pod <leader-pod>
 
   Prometheus UI:
     kubectl --context kind-$CLUSTER -n taskqueue port-forward svc/prometheus 9090:9090

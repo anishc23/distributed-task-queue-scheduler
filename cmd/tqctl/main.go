@@ -117,9 +117,16 @@ func status(ctx context.Context, br *broker.Broker, asJSON bool) error {
 	if err != nil {
 		return err
 	}
+	leader, epoch, leaseTTL, held, err := br.Leadership(ctx)
+	if err != nil {
+		return err
+	}
 
 	type report struct {
 		Namespace          string           `json:"namespace"`
+		Leader             string           `json:"leader"`
+		LeaderEpoch        int64            `json:"leader_epoch"`
+		LeaseExpiresInS    float64          `json:"lease_expires_in_seconds"`
 		Pending            int64            `json:"pending"`
 		InFlight           int64            `json:"in_flight"`
 		UnackedDeliveries  int64            `json:"unacked_deliveries"`
@@ -131,6 +138,9 @@ func status(ctx context.Context, br *broker.Broker, asJSON bool) error {
 	}
 	rep := report{
 		Namespace:         br.Keys().Namespace,
+		Leader:            leader,
+		LeaderEpoch:       epoch,
+		LeaseExpiresInS:   leaseTTL.Seconds(),
 		Pending:           pending,
 		InFlight:          inflight,
 		UnackedDeliveries: execPending,
@@ -148,6 +158,14 @@ func status(ctx context.Context, br *broker.Broker, asJSON bool) error {
 	}
 
 	fmt.Printf("namespace            %s\n", rep.Namespace)
+	if held {
+		fmt.Printf("scheduler leader     %s (epoch %d, lease expires in %.1fs)\n",
+			rep.Leader, rep.LeaderEpoch, rep.LeaseExpiresInS)
+	} else {
+		// Normal for a few milliseconds during a failover, a problem if it
+		// persists: nothing is dispatching.
+		fmt.Printf("scheduler leader     none -- nothing is dispatching\n")
+	}
 	fmt.Printf("pending              %d\n", rep.Pending)
 	fmt.Printf("in flight            %d\n", rep.InFlight)
 	fmt.Printf("unacked deliveries   %d\n", rep.UnackedDeliveries)

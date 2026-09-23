@@ -76,6 +76,57 @@ type Scheduler struct {
 	DefaultTenantWeight float64 `yaml:"default_tenant_weight" json:"default_tenant_weight"`
 	// StateFlushInterval is how often policy state is persisted to Redis.
 	StateFlushInterval Duration `yaml:"state_flush_interval" json:"state_flush_interval"`
+	// LeaderElection controls how a scheduler replica acquires the right to
+	// dispatch. See LeaderElection.
+	LeaderElection LeaderElection `yaml:"leader_election" json:"leader_election"`
+	// IngestReclaimInterval is how often the leader looks for ingress entries
+	// stranded by a scheduler that died before acknowledging them.
+	IngestReclaimInterval Duration `yaml:"ingest_reclaim_interval" json:"ingest_reclaim_interval"`
+	// IngestReclaimMinIdle is how long an ingress entry must have been pending
+	// before it is treated as stranded.
+	//
+	// This is much shorter than recovery.min_idle, and the asymmetry is the
+	// point. A worker legitimately holds an exec entry for as long as the task
+	// takes to run, so reclaiming it early would duplicate real work. A
+	// scheduler holds an ingress entry only for the microseconds between
+	// reading it and admitting it, so anything pending for seconds is not busy,
+	// it is dead.
+	IngestReclaimMinIdle Duration `yaml:"ingest_reclaim_min_idle" json:"ingest_reclaim_min_idle"`
+}
+
+// LeaderElection configures the lease that enforces one dispatching scheduler.
+//
+// The scheduler owns the pending index and the policy's virtual clock, so two
+// of them dispatching at once does not merely duplicate work, it ranks tasks
+// against two divergent clocks and then overwrites one flush with the other.
+// The lease makes that impossible rather than merely discouraged.
+//
+// Only the scheduler command reads this. The benchmark harness runs a single
+// in-process engine against a namespace it has just reset, so there is nothing
+// to elect and it builds its engine without a lease; that keeps the published
+// measurements free of an election that a benchmark would never exercise.
+type LeaderElection struct {
+	// Enabled turns on the lease. With it off, the process dispatches
+	// immediately and assumes it is alone, which is correct only when
+	// something outside the system guarantees that.
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// TTL is how long a grant survives without renewal, and therefore the
+	// worst-case dispatch outage after a leader crashes hard: a standby cannot
+	// safely take over until Redis has expired the key. Lowering it shortens
+	// failover and raises the chance that an ordinary latency spike is
+	// mistaken for a death.
+	TTL Duration `yaml:"ttl" json:"ttl"`
+	// RenewInterval is how often the holder extends its grant. It must be
+	// comfortably shorter than TTL, since the leader gets TTL/RenewInterval
+	// attempts to survive a transient Redis hiccup.
+	RenewInterval Duration `yaml:"renew_interval" json:"renew_interval"`
+	// RetryInterval is how often a standby tries to acquire.
+	//
+	// This, not TTL, is what bounds a graceful handover. A leader shutting
+	// down cleanly releases the lease at once, so the only remaining delay is
+	// however long the standby takes to poll. Measured at a median of roughly
+	// half this value, which is what a uniform poll offset predicts.
+	RetryInterval Duration `yaml:"retry_interval" json:"retry_interval"`
 }
 
 // Worker configures a worker process.
@@ -228,6 +279,30 @@ func (c *Config) Validate() error {
 	if !ValidExecMode(c.Worker.ExecMode) {
 		errs = append(errs, fmt.Errorf("worker.exec_mode %q must be one of %v", c.Worker.ExecMode, ExecModes()))
 	}
+	if c.Scheduler.IngestReclaimInterval.D() <= 0 {
+		errs = append(errs, fmt.Errorf("scheduler.ingest_reclaim_interval must be > 0, got %s", c.Scheduler.IngestReclaimInterval))
+	}
+	if c.Scheduler.IngestReclaimMinIdle.D() <= 0 {
+		errs = append(errs, fmt.Errorf("scheduler.ingest_reclaim_min_idle must be > 0, got %s", c.Scheduler.IngestReclaimMinIdle))
+	}
+
+	if le := c.Scheduler.LeaderElection; le.Enabled {
+		switch {
+		case le.TTL.D() <= 0:
+			errs = append(errs, fmt.Errorf("scheduler.leader_election.ttl must be > 0, got %s", le.TTL))
+		case le.RenewInterval.D() <= 0:
+			errs = append(errs, fmt.Errorf("scheduler.leader_election.renew_interval must be > 0, got %s", le.RenewInterval))
+		case le.RenewInterval.D() >= le.TTL.D():
+			// Renewing no more often than the TTL leaves no margin at all: the
+			// first slow round trip drops the lease and triggers a failover
+			// that nothing was actually wrong with.
+			errs = append(errs, fmt.Errorf("scheduler.leader_election.renew_interval (%s) must be shorter than ttl (%s)", le.RenewInterval, le.TTL))
+		}
+		if le.RetryInterval.D() <= 0 {
+			errs = append(errs, fmt.Errorf("scheduler.leader_election.retry_interval must be > 0, got %s", le.RetryInterval))
+		}
+	}
+
 	if c.Worker.Block.D() <= 0 {
 		errs = append(errs, fmt.Errorf("worker.block must be > 0, got %s", c.Worker.Block))
 	}

@@ -34,10 +34,12 @@ policies, compared carefully under controlled conditions.
 ```mermaid
 flowchart TD
     P[Producer<br/>seeded workload] -->|XADD| ING[(ingress stream)]
-    ING -->|XREADGROUP| SI[Scheduler: ingest]
+    ING -->|XREADGROUP| SI[Scheduler leader: ingest]
     SI -->|policy.Rank| RANK{{fifo / priority / edf / wfq}}
     RANK -->|admit.lua| PEND[(pending ZSET<br/>+ payload HASH)]
-    SD[Scheduler: dispatch] --> PEND
+    SD[Scheduler leader: dispatch] --> PEND
+    LEASE[(leader lease<br/>+ fencing epoch)] -.->|only the holder<br/>ingests and dispatches| SD
+    SB[Scheduler standby<br/>campaigning] -.->|takes over on<br/>crash or rollout| LEASE
     PEND -->|dispatch.lua<br/>ZPOPMIN + XADD, atomic| EXEC[(exec stream)]
     EXEC -->|XREADGROUP| W[Worker slots]
     W -->|complete.lua<br/>HSETNX + XADD + XACK| RES[(results stream)]
@@ -46,6 +48,7 @@ flowchart TD
     REC -->|budget exhausted| DLQ[(dead-letter stream)]
     RES --> B[Benchmark: CSV + statistics]
     SI -.-> M[/scheduler metrics :9101/]
+    SB -.-> M
     W -.-> MW[/worker metrics :9102/]
 ```
 
@@ -56,7 +59,7 @@ flowchart TD
   Producer
      |  XADD
      v
-  ingress stream --- XREADGROUP (group: schedulers) --> Scheduler ingest
+  ingress stream --- XREADGROUP (group: schedulers) --> Scheduler LEADER
                                                             |
                                                      policy.Rank(task)
                                                             |  admit.lua (atomic)
@@ -72,12 +75,35 @@ flowchart TD
         +--------------- Recovery loop                results stream
                              |
                              +-- budget exhausted --> dead-letter stream
+
+
+  Leadership, off to the side of the data path:
+
+      Scheduler LEADER  ---- holds ----> leader lease (SET NX PX, TTL)
+                                              |  grant carries epoch N
+                                              v
+                                         fence key: highest epoch that wrote
+                                              ^
+      Scheduler STANDBY ---- campaigns --------+
+        (ready, scraped, dispatches nothing)
+
+  Only the lease holder ingests and dispatches, and every write it makes
+  carries epoch N. A write with an epoch below the fence is refused inside
+  the same Lua script that would have performed it, so a leader that was
+  paused past its TTL cannot act even if it still believes it leads.
 ```
 </details>
 
 The scheduler is a genuine decision point, not an emergent property of consumer
 order. Producers write only to the ingress stream; workers only ever see tasks
-the scheduler has already ranked and dispatched. See
+the scheduler has already ranked and dispatched.
+
+It is also a single writer, and that invariant is enforced by a Redis lease with
+a monotonic fencing token rather than by a `replicas: 1` in a manifest. Run as
+many scheduler replicas as you like: exactly one dispatches, the rest stand by,
+and a superseded leader is refused **at the resource**, so a process that was
+paused past its lease and woke up believing it still leads cannot act on that
+belief. See [Scheduler failover](#scheduler-failover) and
 [docs/architecture.md](docs/architecture.md).
 
 ---
@@ -174,6 +200,18 @@ make run-scheduler SCHEDULER=edf
 go run ./cmd/scheduler --config configs/default.yaml \
   --policy wfq --metrics-addr :9101 --max-in-flight 32
 go run ./cmd/scheduler --policy fifo --recovery=false   # recovery loop off
+
+# Run a standby. It campaigns for the lease and dispatches nothing until the
+# leader goes away, so starting one is always safe.
+go run ./cmd/scheduler --policy wfq --metrics-addr :9111 --consumer sched-b
+
+# Who is leading right now?
+curl -s localhost:9101/metrics | grep tq_scheduler_is_leader
+curl -s localhost:9111/metrics | grep tq_scheduler_is_leader
+
+# Shorten failover at the cost of tolerating less latency before deposing a
+# healthy leader. The renew interval must stay well below the TTL.
+go run ./cmd/scheduler --lease-ttl 2s --lease-renew 600ms
 ```
 
 ### Worker
@@ -243,6 +281,25 @@ go run ./cmd/benchmark \
   --run-id my-experiment --results-dir results
 ```
 
+### Measuring the scheduler itself
+
+The matrix above is bounded by simulated work, so it says nothing about the
+scheduler's own limits. Two separate tools do:
+
+```bash
+make ceiling TASKS=20000        # dispatch ceiling, no workers attached
+make failover REPETITIONS=15    # dispatch outage when the leader is killed
+
+# What does enforcing the single-writer invariant cost? Same measurement, twice.
+go run ./cmd/schedbench --tasks 20000 --epoch 0    # fencing guard inert
+go run ./cmd/schedbench --tasks 20000 --epoch 1    # fencing guard live
+
+# Failover against a shorter lease: faster recovery, less tolerance for a
+# latency spike before a healthy leader is deposed.
+go run ./cmd/failoverbench --arms crash --lease-ttl 2s --lease-renew 600ms \
+  --repetitions 12 --run-id failover-ttl2s
+```
+
 ### Plots
 
 ```bash
@@ -251,6 +308,9 @@ make plots              # charts for the newest run
 make plots RUN=my-experiment
 
 python3 scripts/plot_results.py --results-dir results --run my-experiment --format png,svg
+
+make sweep-plots RUN=sweep-loads          # offered-load curves
+make failover-plots RUN=failover          # failover outage by arm
 ```
 
 ### Local Kubernetes with kind
@@ -279,6 +339,23 @@ scripts/kind-down.sh --cluster taskqueue
 
 `kind-down.sh` deletes only the named cluster; other kind clusters are untouched.
 
+The scheduler Deployment runs **two replicas with a RollingUpdate strategy and a
+PodDisruptionBudget**, which is only safe because the lease enforces one
+dispatcher. Watch a failover from inside the cluster:
+
+```bash
+kubectl --context kind-taskqueue -n taskqueue exec deploy/scheduler -- \
+  tqctl status --config /etc/taskqueue/config.yaml | grep leader
+
+# Kill the leader by name and watch the standby take it over within the TTL.
+kubectl --context kind-taskqueue -n taskqueue delete pod <leader-pod> --force
+```
+
+A single-node kind cluster cannot spread the two replicas across nodes, so the
+topology-spread constraint is `ScheduleAnyway` rather than a hard requirement —
+a hard one would leave the standby permanently pending in exactly the
+environment this README tells you to try first.
+
 ### Scaling workers horizontally
 
 ```bash
@@ -288,9 +365,23 @@ go run ./cmd/worker --name worker-c --metrics-addr :9104               # bare pr
 ```
 
 Workers are stateless consumers of one Redis Streams consumer group, so they
-scale without coordination. The **scheduler is deliberately single-replica**: it
-owns the pending index and the WFQ virtual clock, and two of them would rank
-tasks against divergent virtual time.
+scale without coordination.
+
+**Schedulers scale for availability, not throughput.** Exactly one replica holds
+the lease and dispatches; the rest stand by. Adding replicas shortens the outage
+after a crash and makes rollouts free, but it does not raise scheduling
+capacity, because the single-writer invariant is the whole point rather than an
+implementation limit. The ceiling is [measured
+here](#how-fast-is-the-scheduler-itself); at roughly 3% utilisation in these
+experiments, it is a long way from being the constraint.
+
+```bash
+kubectl -n taskqueue scale deployment/scheduler --replicas=3            # safe
+kubectl -n taskqueue get pods -l app.kubernetes.io/name=scheduler       # 1 leads
+```
+
+Before the lease existed this said "the scheduler is deliberately
+single-replica", and that command would have silently corrupted WFQ.
 
 ---
 
@@ -347,6 +438,18 @@ experiment profiles in `experiments/`.
 | `tenant_weights` | all `1` | Relative WFQ weights per tenant. Ignored by other policies. |
 | `default_tenant_weight` | `1` | Weight for tenants absent from the map. |
 | `state_flush_interval` | `1s` | How often policy state is persisted to Redis. |
+| `leader_election.enabled` | `true` | Enforce one dispatching scheduler through a Redis lease. Turning this off is only safe if something outside the system guarantees a single scheduler. |
+| `leader_election.ttl` | `5s` | How long a grant survives without renewal, and therefore the dispatch outage after a hard crash. A clean shutdown releases the lease and costs nothing, so this governs crashes only. |
+| `leader_election.renew_interval` | `1500ms` | How often the leader extends its grant. Must be shorter than the TTL; at this ratio the leader gets three attempts to ride out a slow Redis round trip. |
+| `leader_election.retry_interval` | `1s` | How often a standby retries acquisition. This, not the TTL, is what bounds a **graceful** handover: the outgoing leader releases the lease immediately, and the standby then takes up to one retry interval to notice. Lower it to shorten rollout gaps, at the cost of one Redis round trip per standby per interval. |
+| `ingest_reclaim_interval` | `1s` | How often the leader looks for ingress entries stranded by a scheduler that died mid-batch. |
+| `ingest_reclaim_min_idle` | `2s` | How long an ingress entry must be pending before it counts as stranded. Far below `recovery.min_idle`, deliberately: a worker legitimately holds an exec entry for as long as the task runs, while a scheduler holds an ingress entry for microseconds. |
+
+`leader_election.enabled` is the one boolean whose default is not backfilled from
+the built-in config. A bool's zero value is indistinguishable from an explicit
+`false`, so backfilling it would silently re-enable election for anyone who had
+turned it off. Omitting the block entirely still leaves it on, because loading
+starts from the defaults and decodes over them.
 
 ### `worker`
 
@@ -625,6 +728,145 @@ a long time to recover. It must exceed your longest expected task duration.
 
 ---
 
+## Scheduler failover
+
+The scheduler is the interesting component in this system and it is a single
+writer. That is not an implementation shortcut: the policy's virtual clock lives
+partly in memory, so two schedulers ranking the same stream each advance their
+own copy against roughly half the traffic, then flush to the same hash where the
+later write wins. Nothing errors, no counter moves, and the only symptom is that
+the fairness numbers are quietly wrong.
+
+So "exactly one scheduler dispatches" has to be a property of the system, not of
+the deployment manifest.
+
+### The lease and the fence
+
+`<ns>:leader` is held with `SET NX PX`, renewed about three times per TTL, and
+released on clean shutdown. Each grant carries an **epoch**, a counter INCRed
+once per grant inside the same atomic script.
+
+The epoch is the part that matters, and it is worth being explicit about why the
+lease alone is not enough. A leader can lose its lease without knowing: a
+garbage-collection pause, a suspended container, or a partition that outlasts
+the TTL. Redis expires the key, a standby wins the next grant, and only then
+does the old leader resume, still believing it leads. Careful renewal does not
+close that window, because the old leader is not running during it, and
+cancelling its context cannot help for the same reason.
+
+The epoch therefore travels with every write the leader makes, and the check
+lives **at the resource**:
+
+```lua
+if epoch < fence then return redis.error_reply('TQFENCED ...') end
+if epoch > fence then redis.call('SET', fenceKey, epoch) end
+```
+
+Redis remembers the highest epoch that has successfully written; anything lower
+is refused permanently, from the instant the successor makes its first write.
+
+Three operations are guarded, for three different reasons:
+
+| operation | what an unguarded stale leader would do |
+| --- | --- |
+| `dispatch` | hand workers real tasks chosen by an out-of-date virtual clock — work that is already running by the time anyone notices |
+| `admit` | insert tasks into the pending set at *scores* derived from a clock it no longer owns; the score is not a property of the task, it is produced by the policy |
+| policy-state flush | the silent one. The write always succeeds, and afterwards only the fairness is wrong |
+
+Guarding admission is the one that is easy to miss, and leaving it out would
+have made the other two guards cosmetic.
+
+Election off (`leader_election.enabled: false`) means a non-positive epoch, and
+the guard then does nothing at all, so a single-scheduler deployment and the
+benchmark harness take exactly the path they always did.
+
+### Try it
+
+```bash
+make up                                  # two schedulers, one leads
+make status                              # names the leader, its epoch and lease
+
+# scheduler leader     <container-hostname>-1 (epoch 3, lease expires in 4.2s)
+
+docker compose kill scheduler            # hard crash, nothing released
+make status                              # the standby, at a strictly newer epoch
+```
+
+Which of the two wins the first grant is a race, and that is fine — the point
+is that exactly one does.
+
+`tqctl status` reads the lease key from Redis rather than asking a scheduler, so
+it answers correctly even when the process that believes it leads is wedged or
+unreachable. Per-replica truth is on the metrics endpoints:
+
+```bash
+curl -s localhost:9101/metrics | grep tq_scheduler_is_leader   # one of these
+curl -s localhost:9103/metrics | grep tq_scheduler_is_leader   # reports 1
+```
+
+The one expression worth alerting on covers both failure directions at once:
+
+```promql
+sum(tq_scheduler_is_leader) != 1    # 0 = leaderless, 2 = split brain
+```
+
+This is also why a standby's readiness probe passes. An unready pod is dropped
+from the Service, which would stop Prometheus scraping the very metric that
+tells you who leads, and a Deployment whose spare replica is never ready cannot
+complete a rolling update.
+
+### What a promoted standby has to do
+
+Taking over is more than starting to dispatch.
+
+**Reload policy state.** Done at the start of every term rather than once at
+process start, so a standby promoted an hour after it booted adopts the virtual
+clock as the previous leader left it instead of resetting it to zero and
+re-granting service to whichever tenant was already ahead.
+
+**Reclaim stranded ingress entries.** `XREADGROUP` with `>` only ever delivers
+entries nobody has seen. An entry the dead leader read and never acknowledged
+belongs to a consumer name that will never come back, so no successor is offered
+it again. The task was accepted from the producer's point of view and then never
+scheduled: not pending, not in flight, not dead-lettered, counted nowhere.
+
+That one was found rather than anticipated. The failover experiment below
+reported exactly one unfinished task in every killed-leader trial, which is what
+sent us looking. The leader now runs `XAUTOCLAIM` over the ingress group and
+re-admits what it finds, which is safe because admission is idempotent, and the
+same trials now complete all 4,000 tasks.
+
+The recovery loop, by contrast, runs on **every** replica. Its paths are already
+idempotent, and making it leader-only would mean a leader wedged mid-term stops
+the queue healing itself, which is the one situation recovery exists for.
+
+### Measured, not asserted
+
+`cmd/failoverbench` starts real scheduler processes, kills one with a real
+signal, and measures the resulting dispatch gap from the `dispatched_at_ms`
+stamp the dispatch script writes on every execution-stream entry. The outage is
+defined without wiggle room: the time between the last dispatch at or before the
+kill and the first one after it.
+
+```bash
+make failover REPETITIONS=15
+make failover-plots RUN=failover
+```
+
+Four arms, each answering a different question:
+
+| Arm | What is killed | Question |
+| --- | --- | --- |
+| `none` | nothing | What is the natural gap between dispatches? Every other number is read against this. |
+| `graceful` | `SIGTERM` the leader | What does a rollout cost? The lease is released. |
+| `crash` | `SIGKILL` the leader | What does a crash cost? Nothing is released, so the TTL has to expire. |
+| `single` | `SIGKILL` the only replica | What is the lease actually buying? |
+
+Results: [Failover and the cost of a crash](#failover-and-the-cost-of-a-crash),
+and section 4.7 of the [report](docs/report.md).
+
+---
+
 ## Metrics
 
 Scheduler on `:9101/metrics`, workers on `:9102/metrics`, both also serving
@@ -652,6 +894,10 @@ Headline metrics:
 | `tq_tenant_service_seconds_total{tenant}` | counter | **the `x` vector of Jain's index** |
 | `tq_task_retries_total` / `tq_tasks_dead_lettered_total` | counters | failure handling |
 | `tq_duplicate_completions_total` | counter | duplicate delivery, correctly suppressed |
+| `tq_scheduler_is_leader` | gauge | **which replica is dispatching**; alert on `sum(...) != 1` |
+| `tq_scheduler_leader_transitions_total` | counter | failovers (two per handover: one loss, one acquisition) |
+| `tq_scheduler_fenced_operations_total` | counter | writes refused from a superseded leader |
+| `tq_ingress_reclaimed_total` | counter | tasks rescued from a scheduler that died mid-batch |
 
 Full reference, including PromQL examples: [docs/metrics.md](docs/metrics.md).
 
@@ -1214,9 +1460,13 @@ make ceiling TASKS=20000
 
 | stage | rate | note |
 | --- | ---: | --- |
-| dispatch, best case | 271,198 tasks/s | batch 256; atomic `ZPOPMIN`+`XADD` |
-| admission | 15,458 tasks/s | one Redis round trip per task |
-| **end to end** | **11,562 tasks/s** | both loops together — the real ceiling |
+| dispatch, best case | 261,727 tasks/s | batch 256; atomic `ZPOPMIN`+`XADD` |
+| admission | 15,204 tasks/s | one Redis round trip per task |
+| **end to end** | **11,381 tasks/s** | both loops together — the real ceiling |
+
+Rates are means over the four policies, 20,000 tasks per phase. These figures
+were re-measured after leader election was added and reproduce the earlier
+measurement of this machine to within 1.6%.
 
 **Dispatch is 18x faster than admission, so dispatch was never the constraint.**
 Dispatch amortises a whole batch over one Redis round trip; admission pays one
@@ -1227,21 +1477,115 @@ stage.
 
 Two consequences worth stating:
 
-**The scheduler can feed about 578 worker slots** at a 50 ms mean task, or
-roughly 145 four-slot worker processes, before it rather than the workers
+**The scheduler can feed about 569 worker slots** at a 50 ms mean task, or
+roughly 142 four-slot worker processes, before it rather than the workers
 becomes the bottleneck. That is the quantitative answer to "is a central
 scheduler a problem?" for this design and this hardware.
 
 **Every experiment in this README ran the scheduler at about 3% of its
-capacity** — 308 tasks/s delivered against an 11,562 tasks/s ceiling. The
+capacity** — 308 tasks/s delivered against an 11,381 tasks/s ceiling. The
 scheduling comparisons are therefore measuring policy, not scheduler saturation,
 which is a validity check the project previously could not make.
+
+**Enforcing the single-writer invariant is nearly free.** The same measurement
+run twice, once with the fencing guard inert and once with it live:
+
+```bash
+go run ./cmd/schedbench --tasks 20000 --epoch 0   # election off, guard inert
+go run ./cmd/schedbench --tasks 20000 --epoch 1   # election on, fence checked
+```
+
+| stage | guard inert | guard live | change |
+| --- | ---: | ---: | ---: |
+| admission | 15,204 /s | 15,009 /s | −1.3% |
+| **end to end** | **11,381 /s** | **11,325 /s** | **−0.5%** |
+| dispatch, best case | 261,727 /s | 264,043 /s | +0.9% |
+
+The honest reading is "below the noise floor of this measurement", not
+"−0.5% exactly": this is one run per cell, dispatch came out *faster* fenced
+than unfenced, and WFQ's admission rate also moved the wrong way. The reason the cost is so small is structural. The fence adds one `GET` inside
+a script that has already paid for its round trip — plus a `SET`, but only on
+the first write of a new term — so enforcement rides along on work that was
+happening anyway.
 
 Batch size matters only up to a point: dispatch reaches 212k/s at batch 64 and
 271k/s at 256, but since admission caps the system at 15k/s, the shipped
 `dispatch_batch: 64` is comfortably past where it stops mattering. Policy choice
 costs almost nothing — WFQ's stateful per-tenant ranking admits at 15,304/s
 against FIFO's 15,581/s, a 1.8% difference.
+
+### Failover and the cost of a crash
+
+The scheduler is the one component that cannot be scaled away, so what happens
+when it dies is a property worth measuring rather than asserting.
+`cmd/failoverbench` starts real scheduler processes and kills one with a real
+signal, measuring the dispatch outage from the timestamps the dispatch script
+itself writes.
+
+```bash
+make failover FAILOVER_REPETITIONS=15
+make failover-plots RUN=failover
+```
+
+15 trials per arm, 4,000 tasks each, 5 s lease, 1.5 s renewal, 1 s standby poll:
+
+| arm | n | median outage | range | tasks unfinished |
+| --- | ---: | ---: | --- | ---: |
+| no kill *(largest natural gap)* | 15 | 6 ms | 2–33 ms | 0 |
+| `SIGTERM` the leader | 15 | **662 ms** | 135–971 ms | 0 |
+| `SIGKILL` the leader | 15 | **4,537 ms** | 3,541–5,365 ms | 0 |
+| `SIGKILL`, one replica | 15 | **never recovered** | — | **31,866** |
+
+**The outage is not "one lease TTL".** That model is wrong in both directions.
+The right one has two terms:
+
+```
+outage = time until the lease is free + time until a standby next polls
+```
+
+A crash makes the first term `TTL − age of the last renewal`, uniform over
+`[TTL − renew, TTL]`. A graceful stop makes it zero, because the leader releases
+the lease on its way out. Both then wait up to one `retry_interval` for a
+standby to notice. Predicted windows: **[3.5 s, 6.0 s]** for a crash and
+**[0, 1.0 s]** for a rollout — and **all 15 trials in each arm land inside
+them**.
+
+So a rollout's 662 ms is a *polling artefact*, not a property of the lease: it
+is half a poll interval. Lower `retry_interval` to shrink it, or publish on
+release to remove it almost entirely — which is listed as future work rather
+than as a tuning knob, because the measurement is what identified it.
+
+**The floor is 6 ms**, so nothing here depends on telling a failover apart from
+ordinary jitter: a crash outage is about 750× the natural gap.
+
+**The single-replica arm is the argument for the lease.** No trial recovered.
+The queue stopped dispatching permanently, and a median of 2,213 of 4,000 tasks
+per trial never reached a terminal state. Those trials are **censored**, not
+averaged as a large number — the chart draws them as a hatched bar spanning the
+axis, because a finite bar would be a lie.
+
+Across all 60 trials the duplicate-completion counter stayed at zero, every
+trial scraped `sum(tq_scheduler_is_leader) == 1` before its kill, and every
+trial in the three recovering arms finished all 4,000 tasks. The last of those
+was not free — see [what a promoted standby has to do](#what-a-promoted-standby-has-to-do).
+
+![Dispatch outage by failure mode](docs/images/failover_outage.png)
+
+**Failover time tracks the lease, so it is a tuning decision.** The crash arm
+repeated at three TTLs, renewal held at `TTL / 3.3`, standby poll at 1 s:
+
+| lease TTL | n | median outage | range | predicted `[TTL − renew, TTL + retry]` | inside |
+| ---: | ---: | ---: | --- | --- | ---: |
+| 2 s | 12 | 1,942 ms | 1,837–2,746 | [1.4 s, 3.0 s] | 12/12 |
+| 5 s | 15 | 4,537 ms | 3,541–5,365 | [3.5 s, 6.0 s] | 15/15 |
+| 10 s | 12 | 8,196 ms | 7,046–9,844 | [7.0 s, 11.0 s] | 12/12 |
+
+All 39 trials land inside the envelope. A shorter lease means faster recovery
+and fewer renewal attempts before a healthy leader is deposed over a slow round
+trip; the 5 s default allows three, which is why it is the default rather than
+the 2 s that looks better in this table.
+
+![Failover time against lease TTL](docs/images/failover_ttl_sensitivity.png)
 
 ### Repetitions matter
 
@@ -1378,12 +1722,15 @@ the run has not been plotted.
 │   ├── scheduler/      central scheduling and recovery
 │   ├── worker/         task execution
 │   ├── benchmark/      the experiment matrix
+│   ├── schedbench/     the scheduler's own dispatch ceiling
+│   ├── failoverbench/  what a scheduler crash costs
 │   └── tqctl/          live state and dead-letter inspection
 ├── internal/
 │   ├── broker/         all Redis access, including the atomic Lua scripts
 │   ├── cli/            shared flags, logging and signal handling
 │   ├── config/         YAML loading, defaults and startup validation
 │   ├── domain/         Task, Result, DeadLetter
+│   ├── lease/          leader election with a fencing token
 │   ├── scheduler/      engine, policy registry
 │   │   ├── policy/     the Policy interface, ordering key, in-memory queue
 │   │   ├── fifo/  priority/  edf/  wfq/
@@ -1394,7 +1741,8 @@ the run has not been plotted.
 │   └── bench/          experiment runner, statistics, CSV writers
 ├── configs/            runnable configurations, fully commented
 ├── experiments/        quick, full and failure-injection profiles
-├── scripts/            plot_results.py, kind-up.sh, kind-down.sh
+├── scripts/            plot_results.py, plot_load_sweep.py, plot_failover.py,
+│                       merge_runs.py, kind-up.sh, kind-down.sh
 ├── deploy/
 │   ├── docker/         multi-stage Dockerfile, Prometheus config
 │   └── kubernetes/     base manifests and a WFQ overlay
@@ -1418,6 +1766,9 @@ the run has not been plotted.
 | Configuration | Defaults validate; partial documents get defaults; durations require units; unknown fields are rejected; twelve specific validation failures; every shipped config file loads |
 | Metrics | Scheduler and worker expose disjoint instrument sets; unregistered instruments are safe to record on; starved tenants appear as zeros; the max-wait gauge never decreases; the endpoint serves metrics and both probes |
 | Domain | JSON round-trips, validation, derived latency and deadline logic |
+| Leader election | Exactly one of two contenders may hold the lease; sixteen concurrent acquisitions grant exactly one; a lapsed lease expires and is taken over within its TTL; renewal keeps a healthy leader in place; a stale release cannot evict its own successor; a renew interval at or above the TTL is rejected at construction |
+| Fencing | A superseded epoch's dispatch is refused **and leaves the pending set untouched**, so the refusal has no side effects; the current epoch is never fenced against itself; `NoEpoch` (election off) is never fenced at all; a stale state flush cannot roll the virtual clock backwards; a flush replaces rather than merges, so no tenant's finish tag survives from an older term |
+| Failover | Two engines: one leads, the other stands by, and after the leader departs all 80 tasks are dispatched exactly once; a promoted standby inherits the virtual clock rather than restarting it (verified with equal-sized batches, so "unchanged" would fail); a promoted standby reclaims ingress entries the dead leader never acknowledged |
 | Redis integration | Full ingress-to-results flow; atomic dispatch loses nothing; `max_in_flight` enforcement; idempotent completion under duplicate delivery; idempotent admission; retry counting through to dead-lettering with metadata; `XAUTOCLAIM` reclaim; scheduler state persistence; namespace reset |
 | End-to-end | The benchmark harness completes every task and writes well-formed CSVs; a worker abandoning 100% of attempts dead-letters everything with correct attempt counts; with 35% intermittent failures every task still reaches a terminal state and no task is recorded twice |
 
@@ -1434,10 +1785,22 @@ process assembly in `cmd/`, which the container and benchmark smoke jobs in CI
 exercise end to end instead.
 
 Unit and integration tests are separated by the `integration` build tag and by
-distinct Make targets. CI runs formatting, vet, `go mod tidy` drift, unit tests
-with the race detector, integration tests against a real Redis 7 service
-container, a full 16-experiment benchmark smoke run with plot generation and
-completeness assertions, a container image build, and manifest rendering.
+distinct Make targets. CI runs formatting, vet, a pinned `staticcheck` over both
+tagged and untagged code, `go mod tidy` drift, unit tests with the race
+detector, integration tests against a real Redis 7 service container, a full
+16-experiment benchmark smoke run with plot generation and completeness
+assertions, a container image build, and manifest rendering.
+
+Manifest rendering also asserts the invariant that cannot be seen by reading one
+file: that the scheduler is never left running multiple replicas with leader
+election disabled. Two schedulers with the lease off corrupt policy state
+silently, so the check belongs in CI rather than in a reviewer's memory.
+
+The failover tests are written to be discriminating rather than merely green.
+The virtual-clock test uses two equal-sized batches specifically so that a
+promoted standby which reset the clock would land on the same number as one that
+inherited it; the assertion demands a strictly higher value. The ingress-reclaim
+test was confirmed to fail with the reclaim loop removed before it was kept.
 
 ---
 
@@ -1460,20 +1823,32 @@ completeness assertions, a container image build, and manifest rendering.
    other, is barely affected because the error is common-mode.
 3. **Non-preemptive, whole-task granularity.** Fairness is approximate over
    horizons shorter than the largest task.
-4. **Single scheduler process.** Scheduling throughput is bounded by one process
-   and one Redis instance. That bounds the scale at which these results apply.
-5. **Single-node Redis.** No cluster support, no failover. The Lua scripts
+4. **One scheduler dispatches at a time.** Replicas give availability, not
+   throughput: the lease guarantees exactly one leader, so scheduling capacity
+   is still bounded by a single process and a single Redis instance. That bounds
+   the scale at which these results apply. Lifting it needs tenant sharding,
+   which trades away the global ordering the policies depend on.
+5. **Failover costs a lease TTL after a hard crash.** Measured at 4.0s median
+   against a 5s TTL, because the kill lands on average half a renewal interval
+   after the last renewal. A clean shutdown releases the lease and costs about
+   one dispatch interval. The TTL is a trade: lower it and failover is faster,
+   but an ordinary latency spike is more likely to depose a healthy leader.
+6. **The fence protects the scheduler's writes, not the workers'.** Completion
+   and retry are unguarded by design, since they are already idempotent and are
+   not single-writer operations. A superseded scheduler cannot dispatch or flush
+   policy state; it was never able to complete tasks in the first place.
+7. **Single-node Redis.** No cluster support, no failover. The Lua scripts
    declare all their keys but have not been validated against Redis Cluster
    key-slot constraints.
-6. **At-least-once only.** Duplicate execution is expected; only completion
+8. **At-least-once only.** Duplicate execution is expected; only completion
    recording is idempotent.
-7. **Deadline misses are computed over completed tasks**, so the dead-letter
+9. **Deadline misses are computed over completed tasks**, so the dead-letter
    count must always be read alongside them.
-8. **Timing is not reproducible**, only the workload is. Repetitions and
+10. **Timing is not reproducible**, only the workload is. Repetitions and
    reported variance are the mitigation, not a fix.
-9. **Jain's index is demand-limited under skew** and must be read together with
+11. **Jain's index is demand-limited under skew** and must be read together with
    per-tenant latency.
-10. **The HPA needs metrics-server**, which a bare kind cluster does not install.
+12. **The HPA needs metrics-server**, which a bare kind cluster does not install.
     Without it the autoscaler reports unknown and leaves the replica count
     alone; manual scaling still works.
 
@@ -1486,7 +1861,12 @@ completeness assertions, a container image build, and manifest rendering.
 - Cost estimation for WFQ from historical durations, to measure the fairness
   lost to estimation error.
 - A tenant-sharded scheduler to lift the single-writer bound, and a measurement
-  of the fairness cost of partitioning.
+  of the fairness cost of partitioning. Leader election makes the scheduler
+  *available*; it does not make it *scalable*, and sharding is the only way to
+  get past one process without giving up global ordering.
+- Redis failover and network-partition injection. Failover of the scheduler is
+  now measured; failover of the store it depends on is not, and the fencing
+  argument assumes a Redis that does not lose writes on promotion.
 - Real task bodies alongside the simulated ones, to check how far the
   sleep-based conclusions transfer.
 - Latency-aware autoscaling driven by `tq_pending_tasks` and
@@ -1497,8 +1877,8 @@ completeness assertions, a container image build, and manifest rendering.
 ## Documentation
 
 - **[docs/report.md](docs/report.md)** — the full technical report ([PDF](docs/report.pdf)): research question, methodology, all results, threats to validity
-- [docs/architecture.md](docs/architecture.md) — components, data flow, atomicity, persisted state
-- [docs/experiments.md](docs/experiments.md) — methodology, load sizing, metric definitions, caveats
+- [docs/architecture.md](docs/architecture.md) — components, data flow, atomicity, persisted state, leadership and fencing
+- [docs/experiments.md](docs/experiments.md) — methodology, load sizing, metric definitions, failover experiments, caveats
 - [docs/metrics.md](docs/metrics.md) — full metrics reference with PromQL examples
 - [results/README.md](results/README.md) — output layout and the committed example
 

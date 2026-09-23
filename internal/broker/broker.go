@@ -151,8 +151,14 @@ func isBusyGroup(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "BUSYGROUP")
 }
 
-// Reset deletes every key in the namespace. Used between benchmark runs so that
-// results from different runs can never be mixed.
+// Reset deletes every key in the namespace, with two deliberate exceptions.
+// Used between benchmark runs so that results from different runs can never be
+// mixed.
+//
+// The leader epoch counter and the fence are left alone; Keys.All explains why.
+// In short, they are the two values whose correctness depends on never going
+// backwards, and a reset that reissued an epoch a live scheduler still holds
+// would defeat the mechanism it is supposed to leave in a clean state.
 func (b *Broker) Reset(ctx context.Context) error {
 	if err := b.rdb.Del(ctx, b.keys.All()...).Err(); err != nil {
 		return fmt.Errorf("reset namespace %s: %w", b.keys.Namespace, err)
@@ -262,16 +268,19 @@ func (b *Broker) AckIngress(ctx context.Context, ids ...string) error {
 // Admit inserts a ranked task into the persistent pending set. It reports
 // whether the task was newly admitted; false means it was a duplicate ingress
 // delivery for a task already pending, in flight or completed.
-func (b *Broker) Admit(ctx context.Context, t domain.Task, key policy.Key) (bool, error) {
+func (b *Broker) Admit(ctx context.Context, t domain.Task, key policy.Key, epoch int64) (bool, error) {
 	payload, err := t.MarshalJSONString()
 	if err != nil {
 		return false, err
 	}
 	res, err := admitScript.Run(ctx, b.rdb,
-		[]string{b.keys.Payloads, b.keys.Pending, b.keys.PendingAge, b.keys.Done, b.keys.Stats},
+		[]string{b.keys.Payloads, b.keys.Pending, b.keys.PendingAge, b.keys.Done, b.keys.Stats, b.keys.Fence},
 		t.ID, key.Member, strconv.FormatFloat(key.Score, 'g', 17, 64),
-		strconv.FormatInt(t.SubmittedAtMillis(), 10), payload,
+		strconv.FormatInt(t.SubmittedAtMillis(), 10), payload, epoch,
 	).Int64()
+	if fenced(err) {
+		return false, ErrFenced
+	}
 	if err != nil {
 		return false, fmt.Errorf("admit task %s: %w", t.ID, err)
 	}
@@ -284,14 +293,36 @@ type Dispatched struct {
 	Task domain.Task
 }
 
+// ErrFenced reports that an operation was refused because a newer scheduler
+// leader has already written. It is not a failure to retry: the caller has been
+// superseded and must stop, which is what the campaign loop does with it.
+var ErrFenced = errors.New("superseded by a newer scheduler epoch")
+
+// fenced recognises the guard's refusal in a Redis error reply.
+//
+// Lua can only signal this as an error string, so the check is textual. The
+// token in FencedError is distinctive enough that no genuine Redis error can
+// collide with it, and the alternative (encoding a status code into every
+// script's reply) would complicate four callers to avoid one string compare.
+func fenced(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "TQFENCED")
+}
+
 // Dispatch atomically selects up to max pending tasks in policy order and
 // publishes them on the worker execution stream. maxInFlight bounds tasks that
 // are dispatched but not yet terminal; zero means unlimited.
-func (b *Broker) Dispatch(ctx context.Context, max int, maxInFlight int, now time.Time) ([]Dispatched, error) {
+//
+// epoch is the caller's leadership token, or lease.NoEpoch when leader election
+// is disabled. A positive epoch older than one that has already dispatched gets
+// ErrFenced and nothing is written.
+func (b *Broker) Dispatch(ctx context.Context, max int, maxInFlight int, now time.Time, epoch int64) ([]Dispatched, error) {
 	raw, err := dispatchScript.Run(ctx, b.rdb,
-		[]string{b.keys.Pending, b.keys.PendingAge, b.keys.Payloads, b.keys.Exec, b.keys.Stats, b.keys.InFlight},
-		max, maxInFlight, now.UnixMilli(), b.maxLen,
+		[]string{b.keys.Pending, b.keys.PendingAge, b.keys.Payloads, b.keys.Exec, b.keys.Stats, b.keys.InFlight, b.keys.Fence},
+		max, maxInFlight, now.UnixMilli(), b.maxLen, epoch,
 	).Slice()
+	if fenced(err) {
+		return nil, ErrFenced
+	}
 	if err != nil {
 		return nil, fmt.Errorf("dispatch: %w", err)
 	}
@@ -457,6 +488,50 @@ func (b *Broker) RetryOrDeadLetter(ctx context.Context, task domain.Task, budget
 	return RetryOutcome(res), next, nil
 }
 
+// AutoClaimIngress reclaims ingress entries that have been pending in the
+// scheduler group for longer than minIdle, and hands them to consumer.
+//
+// This is the counterpart of AutoClaim for the other end of the pipeline, and
+// it exists for a failure that is easy to miss. XREADGROUP with ">" only
+// delivers entries nobody has seen. An entry a scheduler read and did not
+// acknowledge before dying therefore belongs to a consumer name that will never
+// come back, and no successor will ever be offered it again. The task was
+// accepted from the producer's point of view and then quietly never scheduled:
+// it is not pending, not dispatched and not dead-lettered, so no counter in the
+// system reports it missing.
+//
+// Re-admitting a reclaimed entry is safe because admission is idempotent: the
+// admit script refuses a task that is already known or already done.
+func (b *Broker) AutoClaimIngress(ctx context.Context, consumer string, minIdle time.Duration, start string, count int64) ([]IngressMessage, string, error) {
+	msgs, next, err := b.rdb.XAutoClaim(ctx, &redis.XAutoClaimArgs{
+		Stream:   b.keys.Ingress,
+		Group:    b.keys.SchedulerGroup,
+		Consumer: consumer,
+		MinIdle:  minIdle,
+		Start:    start,
+		Count:    count,
+	}).Result()
+	if errors.Is(err, redis.Nil) {
+		return nil, "0-0", nil
+	}
+	if err != nil {
+		return nil, start, fmt.Errorf("autoclaim ingress stream: %w", err)
+	}
+	out := make([]IngressMessage, 0, len(msgs))
+	for _, m := range msgs {
+		raw, _ := m.Values["task"].(string)
+		task, err := domain.UnmarshalTask(raw)
+		if err != nil {
+			// Unusable entry: acknowledge it so it stops being reclaimed on
+			// every pass forever.
+			_ = b.AckIngress(ctx, m.ID)
+			continue
+		}
+		out = append(out, IngressMessage{ID: m.ID, Task: task})
+	}
+	return out, next, nil
+}
+
 // AutoClaim reclaims exec-stream entries that have been pending in the worker
 // group for longer than minIdle, which is the visibility timeout. It returns
 // the reclaimed messages and the cursor to pass on the next call.
@@ -573,17 +648,51 @@ func (b *Broker) TenantService(ctx context.Context) (service map[string]int64, c
 	return service, count, nil
 }
 
+// Leadership reports who currently holds the scheduling lease, the epoch of
+// their term, and how long the grant has left before it expires.
+//
+// It reads the lease key directly rather than asking a scheduler, which matters
+// for an operator tool: Redis is the authoritative record, so this answers
+// correctly even when the process that believes it leads is unreachable, wedged
+// or has already been fenced out.
+//
+// held is false when nobody holds it, which is normal for a few milliseconds
+// during a failover and a problem if it persists.
+func (b *Broker) Leadership(ctx context.Context) (owner string, epoch int64, ttl time.Duration, held bool, err error) {
+	val, err := b.rdb.Get(ctx, b.keys.Leader).Result()
+	if errors.Is(err, redis.Nil) {
+		return "", 0, 0, false, nil
+	}
+	if err != nil {
+		return "", 0, 0, false, fmt.Errorf("read scheduler lease: %w", err)
+	}
+	owner = val
+	if i := strings.LastIndex(val, "|"); i >= 0 {
+		owner = val[:i]
+		epoch, _ = strconv.ParseInt(val[i+1:], 10, 64)
+	}
+	if d, err := b.rdb.PTTL(ctx, b.keys.Leader).Result(); err == nil && d > 0 {
+		ttl = d
+	}
+	return owner, epoch, ttl, true, nil
+}
+
 // SaveSchedulerState persists policy state so a scheduler restart resumes with
 // the same virtual clocks instead of silently re-granting service.
-func (b *Broker) SaveSchedulerState(ctx context.Context, state map[string]string) error {
+func (b *Broker) SaveSchedulerState(ctx context.Context, state map[string]string, epoch int64) error {
 	if len(state) == 0 {
 		return nil
 	}
-	values := make(map[string]any, len(state))
+	args := make([]any, 0, 1+2*len(state))
+	args = append(args, epoch)
 	for k, v := range state {
-		values[k] = v
+		args = append(args, k, v)
 	}
-	if err := b.rdb.HSet(ctx, b.keys.SchedState, values).Err(); err != nil {
+	err := saveStateScript.Run(ctx, b.rdb, []string{b.keys.SchedState, b.keys.Fence}, args...).Err()
+	if fenced(err) {
+		return ErrFenced
+	}
+	if err != nil {
 		return fmt.Errorf("save scheduler state: %w", err)
 	}
 	return nil

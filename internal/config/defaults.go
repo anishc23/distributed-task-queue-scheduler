@@ -33,10 +33,32 @@ func Default() *Config {
 			MaxInFlight:         64,
 			MetricsAddr:         ":9101",
 			DefaultTenantWeight: 1,
+			// On by default. A scheduler that dispatches without checking
+			// whether another one is already doing so is unsafe, and a default
+			// that is only safe when the operator remembers to change it is
+			// the wrong default. A lone scheduler wins the first grant
+			// immediately, so the cost of having this on is one Redis round
+			// trip at startup and one every two seconds thereafter.
+			//
+			// Five seconds bounds the dispatch outage after a hard crash;
+			// a clean shutdown releases the lease and costs nothing.
+			LeaderElection: LeaderElection{
+				Enabled:       true,
+				TTL:           Duration(5 * time.Second),
+				RenewInterval: Duration(1500 * time.Millisecond),
+				RetryInterval: Duration(1 * time.Second),
+			},
 			TenantWeights: map[string]float64{
 				"A": 1, "B": 1, "C": 1, "D": 1, "E": 1,
 			},
 			StateFlushInterval: Duration(time.Second),
+			// Two seconds is far longer than the read-to-admit round trip a
+			// healthy leader takes, so this can never steal an entry the
+			// current leader is working on, and far shorter than the exec
+			// stream's fifteen, because a scheduler that has held an ingress
+			// entry for two seconds is not busy with it.
+			IngestReclaimInterval: Duration(time.Second),
+			IngestReclaimMinIdle:  Duration(2 * time.Second),
 		},
 		Worker: Worker{
 			Concurrency:       4,
@@ -156,6 +178,26 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Scheduler.StateFlushInterval == 0 {
 		c.Scheduler.StateFlushInterval = d.Scheduler.StateFlushInterval
+	}
+	// Only the intervals are backfilled. Enabled is a bool, so its zero value
+	// is indistinguishable from an explicit "enabled: false", and defaulting it
+	// here would quietly re-enable election for anyone who turned it off. Load
+	// starts from Default(), so a file that simply omits the block still gets
+	// the default of on.
+	if c.Scheduler.IngestReclaimInterval == 0 {
+		c.Scheduler.IngestReclaimInterval = d.Scheduler.IngestReclaimInterval
+	}
+	if c.Scheduler.IngestReclaimMinIdle == 0 {
+		c.Scheduler.IngestReclaimMinIdle = d.Scheduler.IngestReclaimMinIdle
+	}
+	if c.Scheduler.LeaderElection.TTL == 0 {
+		c.Scheduler.LeaderElection.TTL = d.Scheduler.LeaderElection.TTL
+	}
+	if c.Scheduler.LeaderElection.RenewInterval == 0 {
+		c.Scheduler.LeaderElection.RenewInterval = d.Scheduler.LeaderElection.RenewInterval
+	}
+	if c.Scheduler.LeaderElection.RetryInterval == 0 {
+		c.Scheduler.LeaderElection.RetryInterval = d.Scheduler.LeaderElection.RetryInterval
 	}
 
 	if c.Worker.Concurrency == 0 {

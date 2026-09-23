@@ -25,6 +25,7 @@ import (
 	"github.com/anishc23/distributed-task-queue/internal/broker"
 	"github.com/anishc23/distributed-task-queue/internal/config"
 	"github.com/anishc23/distributed-task-queue/internal/domain"
+	"github.com/anishc23/distributed-task-queue/internal/lease"
 	"github.com/anishc23/distributed-task-queue/internal/scheduler/fifo"
 	"github.com/anishc23/distributed-task-queue/internal/scheduler/policy"
 	"github.com/anishc23/distributed-task-queue/internal/scheduler/priority"
@@ -186,7 +187,7 @@ func TestFullFlowIngressToResults(t *testing.T) {
 
 	pol := fifo.New()
 	for _, m := range msgs {
-		admitted, err := br.Admit(ctx, m.Task, pol.Rank(m.Task))
+		admitted, err := br.Admit(ctx, m.Task, pol.Rank(m.Task), lease.NoEpoch)
 		if err != nil {
 			t.Fatalf("admit: %v", err)
 		}
@@ -202,7 +203,7 @@ func TestFullFlowIngressToResults(t *testing.T) {
 		t.Fatalf("pending = %d (err %v), want 3", n, err)
 	}
 
-	dispatched, err := br.Dispatch(ctx, 10, 0, time.Now())
+	dispatched, err := br.Dispatch(ctx, 10, 0, time.Now(), lease.NoEpoch)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -286,12 +287,12 @@ func TestRedisDispatchMatchesPolicyOrdering(t *testing.T) {
 	}
 	for _, tk := range tasks {
 		inMemory.Admit(tk)
-		if _, err := br.Admit(ctx, tk, pol.Rank(tk)); err != nil {
+		if _, err := br.Admit(ctx, tk, pol.Rank(tk), lease.NoEpoch); err != nil {
 			t.Fatalf("admit: %v", err)
 		}
 	}
 
-	dispatched, err := br.Dispatch(ctx, 100, 0, time.Now())
+	dispatched, err := br.Dispatch(ctx, 100, 0, time.Now(), lease.NoEpoch)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -316,18 +317,18 @@ func TestDispatchRespectsMaxInFlight(t *testing.T) {
 	pol := fifo.New()
 	for i := 0; i < 10; i++ {
 		tk := task(fmt.Sprintf("t-%02d", i), int64(i))
-		if _, err := br.Admit(ctx, tk, pol.Rank(tk)); err != nil {
+		if _, err := br.Admit(ctx, tk, pol.Rank(tk), lease.NoEpoch); err != nil {
 			t.Fatal(err)
 		}
 	}
-	dispatched, err := br.Dispatch(ctx, 10, 3, time.Now())
+	dispatched, err := br.Dispatch(ctx, 10, 3, time.Now(), lease.NoEpoch)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
 	if len(dispatched) != 3 {
 		t.Fatalf("dispatched %d with max_in_flight=3, want 3", len(dispatched))
 	}
-	again, err := br.Dispatch(ctx, 10, 3, time.Now())
+	again, err := br.Dispatch(ctx, 10, 3, time.Now(), lease.NoEpoch)
 	if err != nil {
 		t.Fatalf("dispatch: %v", err)
 	}
@@ -349,10 +350,10 @@ func TestCompletionIsIdempotent(t *testing.T) {
 	}
 	tk := task("dupe", 0)
 	pol := fifo.New()
-	if _, err := br.Admit(ctx, tk, pol.Rank(tk)); err != nil {
+	if _, err := br.Admit(ctx, tk, pol.Rank(tk), lease.NoEpoch); err != nil {
 		t.Fatal(err)
 	}
-	dispatched, err := br.Dispatch(ctx, 1, 0, time.Now())
+	dispatched, err := br.Dispatch(ctx, 1, 0, time.Now(), lease.NoEpoch)
 	if err != nil || len(dispatched) != 1 {
 		t.Fatalf("dispatch: %v (%d)", err, len(dispatched))
 	}
@@ -408,11 +409,11 @@ func TestAdmissionIsIdempotent(t *testing.T) {
 	tk := task("once", 0)
 	pol := fifo.New()
 
-	first, err := br.Admit(ctx, tk, pol.Rank(tk))
+	first, err := br.Admit(ctx, tk, pol.Rank(tk), lease.NoEpoch)
 	if err != nil || !first {
 		t.Fatalf("first admit: %v %v", first, err)
 	}
-	second, err := br.Admit(ctx, tk, pol.Rank(tk))
+	second, err := br.Admit(ctx, tk, pol.Rank(tk), lease.NoEpoch)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -443,10 +444,10 @@ func TestRetryThenDeadLetter(t *testing.T) {
 	const budget = 2
 	tk := task("flaky", 0, func(t *domain.Task) { t.MaxRetries = budget })
 	pol := fifo.New()
-	if _, err := br.Admit(ctx, tk, pol.Rank(tk)); err != nil {
+	if _, err := br.Admit(ctx, tk, pol.Rank(tk), lease.NoEpoch); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := br.Dispatch(ctx, 1, 0, time.Now()); err != nil {
+	if _, err := br.Dispatch(ctx, 1, 0, time.Now(), lease.NoEpoch); err != nil {
 		t.Fatal(err)
 	}
 
@@ -511,10 +512,10 @@ func TestRetryThenDeadLetter(t *testing.T) {
 
 	// A completed task must never be retried afterwards.
 	done := task("finished", 0)
-	if _, err := br.Admit(ctx, done, pol.Rank(done)); err != nil {
+	if _, err := br.Admit(ctx, done, pol.Rank(done), lease.NoEpoch); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := br.Dispatch(ctx, 1, 0, time.Now()); err != nil {
+	if _, err := br.Dispatch(ctx, 1, 0, time.Now(), lease.NoEpoch); err != nil {
 		t.Fatal(err)
 	}
 	dm, _ := br.ReadExec(ctx, "w1", 1, time.Second)
@@ -539,10 +540,10 @@ func TestAutoClaimReclaimsIdleDeliveries(t *testing.T) {
 	}
 	tk := task("abandoned", 0)
 	pol := fifo.New()
-	if _, err := br.Admit(ctx, tk, pol.Rank(tk)); err != nil {
+	if _, err := br.Admit(ctx, tk, pol.Rank(tk), lease.NoEpoch); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := br.Dispatch(ctx, 1, 0, time.Now()); err != nil {
+	if _, err := br.Dispatch(ctx, 1, 0, time.Now(), lease.NoEpoch); err != nil {
 		t.Fatal(err)
 	}
 	// Deliver to a worker that then "crashes": never acknowledges.
@@ -578,7 +579,7 @@ func TestSchedulerStatePersistence(t *testing.T) {
 	ctx := testContext(t)
 
 	state := map[string]string{"vtime": "1234.5", "lf:A": "2000", "lf:B": "1500"}
-	if err := br.SaveSchedulerState(ctx, state); err != nil {
+	if err := br.SaveSchedulerState(ctx, state, lease.NoEpoch); err != nil {
 		t.Fatal(err)
 	}
 	loaded, err := br.LoadSchedulerState(ctx)
@@ -606,13 +607,13 @@ func TestDispatchIsAtomic(t *testing.T) {
 	const n = 50
 	for i := 0; i < n; i++ {
 		tk := task(fmt.Sprintf("atomic-%02d", i), int64(i))
-		if _, err := br.Admit(ctx, tk, pol.Rank(tk)); err != nil {
+		if _, err := br.Admit(ctx, tk, pol.Rank(tk), lease.NoEpoch); err != nil {
 			t.Fatal(err)
 		}
 	}
 	var dispatchedIDs []string
 	for {
-		batch, err := br.Dispatch(ctx, 7, 0, time.Now())
+		batch, err := br.Dispatch(ctx, 7, 0, time.Now(), lease.NoEpoch)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -649,7 +650,7 @@ func TestResetClearsNamespace(t *testing.T) {
 		t.Fatal(err)
 	}
 	tk := task("gone", 0)
-	if _, err := br.Admit(ctx, tk, fifo.New().Rank(tk)); err != nil {
+	if _, err := br.Admit(ctx, tk, fifo.New().Rank(tk), lease.NoEpoch); err != nil {
 		t.Fatal(err)
 	}
 	if err := br.Reset(ctx); err != nil {

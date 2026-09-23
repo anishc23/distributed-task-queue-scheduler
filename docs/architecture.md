@@ -18,7 +18,8 @@ demonstrate FIFO.
 | Component | Package | Role |
 | --- | --- | --- |
 | Producer | `cmd/producer`, `internal/workload` | Generates a reproducible finite workload and appends it to the ingress stream. Knows nothing about scheduling. |
-| Scheduler | `cmd/scheduler`, `internal/scheduler` | Ingests, ranks with the configured policy, and atomically dispatches to workers. Single writer. |
+| Scheduler | `cmd/scheduler`, `internal/scheduler` | Ingests, ranks with the configured policy, and atomically dispatches to workers. Single writer, enforced by a lease. Run several: one leads, the rest stand by. |
+| Lease | `internal/lease` | Redis-backed leader election with a monotonic fencing token. The mechanism that makes "single writer" a property of the system rather than of the deployment manifest. |
 | Policies | `internal/scheduler/{fifo,priority,edf,wfq}` | Pluggable ranking algorithms behind one interface. |
 | Worker | `cmd/worker`, `internal/worker` | Consumes the execution stream, simulates work, records terminal results idempotently. |
 | Recovery | `internal/recovery` | Reclaims deliveries that exceeded the visibility timeout; retries or dead-letters them. Runs inside the scheduler process. |
@@ -96,6 +97,119 @@ that:
    the total number of worker slots keeps the pending set deep and the decision
    meaningful.
 
+## Leadership, and why a lock is not enough
+
+The scheduler owns the pending index and the policy's virtual clock, both of
+which live partly in memory. Two schedulers ranking the same stream do not
+simply duplicate work. Each advances its own copy of the virtual clock against
+roughly half the traffic, and then the two flush to the same hash, where the
+later write wins. Nothing errors. No counter moves. The only symptom is that the
+fairness numbers are wrong, and only if somebody is looking.
+
+Before this was enforced, the invariant was a comment in a Kubernetes manifest
+and `replicas: 1`. That is a real defence against the common case and no defence
+at all against `kubectl scale`, against a second process started by hand from
+the instructions in this repository's own README, or against a `Recreate`
+rollout's unavoidable dispatch gap.
+
+### The lease
+
+`<ns>:leader` is taken with `SET NX PX`, renewed by its holder about three times
+per TTL, and released on clean shutdown. Acquisition also stamps the grant with an
+**epoch**: a counter INCRed once per grant, so every term is strictly newer than
+every term before it. Acquisition and the INCR happen inside one Lua script, so
+the gap between "nobody holds it" and "I hold it" does not exist.
+
+### Why the epoch is the part that matters
+
+A lease alone is not sufficient, and the reason is worth stating plainly because
+it is the failure most implementations of this get wrong.
+
+A leader can lose its lease without knowing. A garbage-collection pause, a
+suspended container, or a partition that outlasts the TTL all produce the same
+situation: Redis expires the key, a standby wins the next grant, and some time
+later the old leader resumes, still believing it leads. No amount of careful
+renewal closes that window, because the old leader is not executing during it,
+and cancelling its context cannot help for exactly the same reason.
+
+So the epoch travels with every write the leader makes, and the check lives at
+the resource:
+
+```lua
+local function fenced(fenceKey, epoch)
+  if epoch <= 0 then return false end          -- election disabled
+  local cur = tonumber(redis.call('GET', fenceKey) or '0')
+  if epoch < cur then return true end          -- superseded: refuse
+  if epoch > cur then redis.call('SET', fenceKey, epoch) end
+  return false
+end
+```
+
+Redis remembers the highest epoch that has successfully written. Anything lower
+is refused, permanently, from the instant the successor makes its first write.
+There is no clock comparison and no assumption about how long a process was
+stopped. Cancelling the deposed leader's context is a courtesy that makes the
+common case fast; this is the guarantee.
+
+Both guarded operations matter, for different reasons:
+
+- **dispatch** — a stale leader that could still dispatch would hand workers
+  tasks chosen by an out-of-date virtual clock, and that is real work, already
+  executed by the time anyone noticed.
+- **policy state flush** — the quiet one. The write always succeeds without a
+  fence, and afterwards the only thing wrong is the fairness.
+
+A non-positive epoch means election is disabled, and the guard then does nothing
+at all. That is deliberate: a single-scheduler deployment, the benchmark harness
+and every test written before the lease existed take exactly the path they
+always did.
+
+### What a failover costs
+
+Measured, not asserted — see `cmd/failoverbench` and section 4.7 of the report:
+
+| Event | Dispatch outage |
+| --- | --- |
+| Clean shutdown or rollout | About one dispatch interval. The lease is released, so nothing waits. |
+| Hard crash | About one lease TTL. Redis must expire the key before a standby can safely take over. |
+| Hard crash, one replica | Unbounded. Nothing takes over. |
+
+Lowering the TTL shortens failover and raises the chance that an ordinary
+latency spike is mistaken for a death. The default of 5s with a 1.5s renewal
+gives a healthy leader three attempts to ride out a slow round trip.
+
+### What a promoted standby has to do
+
+Taking over is not just "start dispatching":
+
+1. **Reload policy state.** Done at the start of every term, not once at process
+   start, so a standby promoted an hour after it booted adopts the clock as the
+   previous leader left it.
+2. **Reclaim stranded ingress entries.** `XREADGROUP` with `>` only delivers
+   entries nobody has seen. An entry the dead leader read and never acknowledged
+   belongs to a consumer name that will never return, so no successor is ever
+   offered it again. The task was accepted from the producer's point of view and
+   then never scheduled: not pending, not in flight, not dead-lettered, counted
+   nowhere. The leader therefore runs `XAUTOCLAIM` over the ingress group and
+   re-admits what it finds, which is safe because admission is idempotent.
+
+   This was not a hypothetical. It showed up as exactly one stranded task in
+   every killed-leader trial of `cmd/failoverbench`, which is how it was found.
+
+   `scheduler.ingest_reclaim_min_idle` defaults to 2s, far below the exec
+   stream's 15s visibility timeout, and the asymmetry is the point: a worker
+   legitimately holds an exec entry for as long as the task runs, while a
+   scheduler holds an ingress entry for the microseconds between reading it and
+   admitting it. Anything pending for two seconds is not busy, it is dead.
+
+### What is not leader-only
+
+The recovery loop runs on every replica. Every path it can take is already
+idempotent — `XAUTOCLAIM` hands a message to exactly one claimant, and the retry
+script checks the `done` hash before acting — and making it leader-only would
+mean a leader wedged mid-term stops the queue healing itself, which is the one
+situation recovery exists for.
+
 ## The scheduling abstraction
 
 ```go
@@ -141,6 +255,9 @@ All keys are prefixed by `streams.namespace`.
 | `<ns>:inflight` | STRING | counter | Dispatched-but-not-terminal count, used to enforce `max_in_flight` across restarts. |
 | `<ns>:stats` | HASH | counters | Admitted, dispatched, completed, retried, dead-lettered, deadline misses, duplicate completions. |
 | `<ns>:tenant_service`, `<ns>:tenant_count` | HASH | tenant → millis / count | Completed service per tenant: the `x` vector of Jain's fairness index. |
+| `<ns>:leader` | STRING | `owner|epoch`, with a TTL | Holding it is leadership. It expires on its own, which is what lets a standby take over from a leader that died without releasing it. |
+| `<ns>:leader_epoch` | STRING | counter | One INCR per grant. Never reset, not even by `Reset`, because a reused token could fence out a healthy leader. |
+| `<ns>:fence` | STRING | highest epoch that has written | The enforcement point. A write carrying a lower epoch is refused permanently. |
 | `<ns>:stream:{ingress,exec,results,dead}` | STREAM | messages | The four streams, with consumer groups on ingress and exec. |
 
 Policy state is flushed every `scheduler.state_flush_interval` and once more on
@@ -207,7 +324,14 @@ On SIGINT or SIGTERM:
 
 - The **scheduler** stops consuming ingress, lets the in-flight dispatch pass
   finish, flushes policy state, and shuts the metrics server down cleanly so the
-  final scrape is not truncated.
+  final scrape is not truncated. It also **releases the lease**, which is what
+  makes a planned shutdown cheap: the standby takes over immediately instead of
+  waiting out a TTL that nothing is actually uncertain about. This is the entire
+  difference between a rollout and a crash.
+  
+  The one case where the lease is deliberately *not* released is when this
+  process has been fenced out, because the write would be refused anyway and the
+  lease already belongs to somebody else.
 - **Workers** stop reading new entries immediately. Tasks already executing
   continue on a detached context bounded by `worker.shutdown_grace` so they can
   finish and acknowledge. Anything unfinished when the grace period expires is
@@ -234,6 +358,13 @@ metrics endpoint, and the split matters:
   dialled. It means "this process is alive".
 - `/readyz` returns 503 until the component has actually started consuming, and
   200 afterwards. It means "this process can do work".
+
+A scheduler standing by is **ready**. It is connected, campaigning, and one
+lease expiry away from serving, and reporting otherwise would be wrong in two
+concrete ways: Kubernetes would drop it from the Service and stop Prometheus
+scraping the very metric that says who leads, and a Deployment whose spare
+replica never becomes ready cannot complete a rolling update. "Am I leading?" is
+a question for `tq_scheduler_is_leader`, not for a readiness probe.
 
 Starting the HTTP server after connecting to Redis would be a mistake, and was
 one during development: a Redis that takes a few seconds to become available

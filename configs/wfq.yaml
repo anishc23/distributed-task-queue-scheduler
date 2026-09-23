@@ -52,6 +52,26 @@ scheduler:
     E: 1
   default_tenant_weight: 1
   state_flush_interval: 1s
+  # Exactly one scheduler dispatches; the rest stand by. The lease is what makes
+  # running more than one replica safe, so leave this on unless something
+  # outside the system guarantees a single scheduler.
+  #
+  # ttl bounds the dispatch outage after a hard crash, because a standby cannot
+  # safely take over until Redis expires the key. A clean shutdown releases the
+  # lease, so this governs crashes, not rollouts. renew_interval gives the
+  # leader three attempts to ride out a slow round trip before being deposed for
+  # no reason, and retry_interval is what bounds a graceful handover.
+  leader_election:
+    enabled: true
+    ttl: 5s
+    renew_interval: 1500ms
+    retry_interval: 1s
+  # How the leader recovers ingress entries a dead scheduler read but never
+  # acknowledged. Far more aggressive than recovery.min_idle below, and
+  # deliberately: a worker legitimately holds an exec entry for as long as the
+  # task runs, while a scheduler holds an ingress entry for microseconds.
+  ingest_reclaim_interval: 1s
+  ingest_reclaim_min_idle: 2s
 
 worker:
   name: ""            # empty derives hostname-pid

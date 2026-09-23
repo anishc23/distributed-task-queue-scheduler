@@ -14,7 +14,7 @@ priority, earliest deadline first (EDF) and weighted fair queuing (WFQ) — were
 compared across four synthetic workloads, seven levels of offered load, and two
 models of task execution.
 
-The study comprises **1,264 experiments over 4.48 million tasks**. Three results
+The study comprises **1,348 experiments over 4.82 million tasks**. Four results
 are reported. First, scheduling policy is decisive only in a narrow band around
 service capacity: the spread between the best and worst policy's 99th-percentile
 latency is 0.1% at half capacity, peaks at 93% at capacity, and falls to 1.1% at
@@ -25,7 +25,11 @@ targets. Third, and least expected, the common practice of simulating task
 execution with sleeps is not a neutral simplification: it systematically
 flatters deadline-aware scheduling, because EDF's advantage depends on declared
 task durations that real execution invalidates. WFQ is unaffected by the same
-error, and the asymmetry has a clean explanation.
+error, and the asymmetry has a clean explanation. Fourth, the availability cost
+of that central scheduler is bounded and measurable: enforcing its single-writer
+invariant with a fenced Redis lease costs under 1% of scheduling throughput, a
+crash costs a median 4.5 s of dispatch outage against a 5 s lease, and with no
+standby the queue never recovers at all.
 
 Three quantitative claims made earlier in this work were subsequently found to
 be wrong and are corrected here. That process is reported rather than concealed,
@@ -47,11 +51,22 @@ differences between them matter at all.
 ### 1.2 Scope and honest framing
 
 The system is a task queue built on a single Redis instance with a
-single-writer scheduler. The genuinely hard distributed-systems problems —
-consensus, partitioning, failure detection, network partitions, clock skew —
-are absent or delegated to Redis. It is more accurately described as a
-scheduling study on a Redis-backed queue than as a distributed system, and is
-described that way throughout.
+single-writer scheduler. Most of the genuinely hard distributed-systems problems
+— consensus, partitioning, network partitions, clock skew — are absent or
+delegated to Redis. It is more accurately described as a scheduling study on a
+Redis-backed queue than as a distributed system, and is described that way
+throughout.
+
+One of them is not delegated. The single-writer scheduler is a coordination
+problem in its own right, and Section 4.7 treats it as one: leadership is a
+Redis lease with a monotonic fencing token, failure detection is lease expiry,
+and the resulting failover behaviour is measured rather than asserted. The
+fencing argument is the standard one — a lock alone cannot stop a process that
+was paused past its lease, so the check has to live at the resource — and
+implementing the fence rather than only the lock is what makes "exactly one
+scheduler dispatches" a property of the system rather than of its deployment
+manifest. That is a narrow slice of the distributed-systems problem space, and
+it is claimed as nothing more.
 
 ## 2. System design
 
@@ -141,6 +156,33 @@ reclaims work that is still legitimately running and two workers race to
 complete the same task. Duplicate completions were suppressed and every task
 appeared exactly once in the results stream.
 
+A second invariant is enforced in the same place: **exactly one scheduler ranks
+and dispatches at a time.** This one is not about losing work, it is about
+losing meaning. The policy's virtual clock lives in the scheduler's memory, so
+two schedulers each advance their own copy against part of the traffic and then
+overwrite each other's persisted state. Nothing errors and no counter moves;
+only the fairness numbers are wrong.
+
+Leadership is a Redis lease (`SET NX PX`, renewed, released on clean shutdown),
+and each grant carries an **epoch** from a monotonic counter. The epoch, not the
+lease, is what makes this sound. A leader paused past its TTL by a
+garbage-collection pause or a suspended container resumes believing it leads,
+and no amount of careful renewal closes that window because the leader is not
+executing during it. So the epoch travels with every write the leader makes, and
+the check runs inside the same atomic script as the write:
+
+```lua
+if epoch < fence then return redis.error_reply('TQFENCED ...') end
+if epoch > fence then redis.call('SET', fenceKey, epoch) end
+```
+
+Admission and dispatch are both guarded. Guarding admission matters for a reason
+that is easy to miss: the score written at admission is not a property of the
+task, it is produced by the policy's virtual clock, so a superseded leader that
+could still admit would insert tasks at positions derived from a clock it no
+longer owns. A non-positive epoch means election is disabled and the guard is
+inert, which is the path the benchmark harness takes.
+
 ## 3. Methodology
 
 ### 3.1 Experimental design
@@ -214,6 +256,20 @@ macOS 26.6 on an Apple M5 (10 cores), Redis 8.10.1 on localhost, Go 1.27. The
 main matrix uses 4 worker processes × 4 slots = 16 slots against a capacity of
 approximately 319 tasks/s. Real-work experiments use 8 slots on 10 cores, for
 reasons given in Section 5.3.
+
+The failover experiments of Section 4.7 have a stricter requirement, because
+they measure wall-clock gaps rather than aggregate rates: anything else running
+on the machine lands directly in the number. Two runs were discarded for that
+reason and are not reported. The first was invalidated by starting a
+race-detector test suite alongside it. The second was invalidated by the laptop
+idle-sleeping partway through an unattended run, which produced two trials
+reporting seventeen-minute outages against a five-second lease.
+
+The second failure is now caught rather than averaged in. A crash outage is
+bounded above by the lease TTL by construction, so the harness flags any trial
+exceeding five times the TTL as suspect and the analysis drops it while
+printing what it dropped. Reporting a number that cannot come from the
+mechanism under test is a failure of the harness, not of the run.
 
 ## 4. Results
 
@@ -343,24 +399,47 @@ be read as a pair.
 
 ### 4.6 The cost of centralisation
 
-The scheduler is a deliberate single-writer component. Two measurements
-establish what it costs.
+The scheduler is a deliberate single-writer component. Three measurements
+establish what it costs: its own capacity, the price of enforcing the
+single-writer invariant, and its overhead against having no scheduler at all.
+Section 4.7 adds the fourth cost, which is availability.
 
 **Its own capacity.** With workers removed and the critical path driven
 directly:
 
 | stage | rate | note |
 | --- | ---: | --- |
-| dispatch, best case | 271,198 tasks/s | batch 256; atomic `ZPOPMIN`+`XADD` |
-| admission | 15,299 tasks/s | one Redis round trip per task |
-| **end to end** | **11,562 tasks/s** | both loops — the real ceiling |
+| dispatch, best case | 261,727 tasks/s | batch 256; atomic `ZPOPMIN`+`XADD` |
+| admission | 15,204 tasks/s | one Redis round trip per task |
+| **end to end** | **11,381 tasks/s** | both loops — the real ceiling |
 
-Dispatch is 18× faster than admission, so dispatch was never the constraint: it
+Dispatch is 17× faster than admission, so dispatch was never the constraint: it
 amortises a batch over one round trip while admission pays one per task. The
-scheduler can feed approximately **578 worker slots** at a 50 ms mean task. It
+scheduler can feed approximately **569 worker slots** at a 50 ms mean task. It
 follows that every experiment in this study ran the scheduler at about **3% of
 its capacity**, so the policy comparisons measure policy rather than scheduler
 saturation — a validity check the work could not previously make.
+
+These figures were re-measured after the leader lease was added and reproduce
+the earlier measurement of the same machine to within 1.6%.
+
+**What enforcing the invariant costs.** The same measurement was run twice, once
+with the fencing guard inert (`--epoch 0`, election off) and once with it live:
+
+| stage | guard inert | guard live | change |
+| --- | ---: | ---: | ---: |
+| admission | 15,204/s | 15,009/s | −1.3% |
+| **end to end** | **11,381/s** | **11,325/s** | **−0.5%** |
+| dispatch, best case | 261,727/s | 264,043/s | +0.9% |
+
+The correct reading is "below this measurement's noise floor", not "−0.5%": each
+cell is a single run, dispatch came out faster fenced than unfenced, and WFQ's
+admission moved the wrong way too. The structural reason the cost is small is
+that the fence adds one `GET` *inside* a script that has already paid for its
+round trip, plus a `SET` only on the first write of a new term. Enforcement
+rides along on work that was happening anyway, which is an argument for putting
+the check at the resource rather than in the client quite apart from its
+correctness advantages.
 
 **Its overhead, against no scheduler at all.** A control arm was added in which
 workers consume the ingress stream directly, producing the same execution order
@@ -389,11 +468,121 @@ it costs 1.2% and delivers identical ordering, so it is strictly worse than
 having no scheduler. FIFO earns its place here as an experimental baseline, not
 as a deployment choice.
 
+### 4.7 What a scheduler failure costs
+
+Section 4.6 measured the *throughput* cost of centralising scheduling. That is
+half the argument; the other half is availability, and an availability claim
+that rests on reading the code is not a measurement.
+
+**Method.** `cmd/failoverbench` builds the scheduler binary, starts real
+processes with `os/exec` in their own process groups, and kills one with a real
+signal — nothing about the failure is simulated. Workers and the load generator
+run in the measuring process against the same Redis. The outage is defined
+narrowly: the gap between the last task dispatched at or before the kill and the
+first one after it, read from the `dispatched_at_ms` field the dispatch script
+stamps on every execution-stream entry. Trials in which no dispatch ever follows
+are **censored** rather than recorded as a large number.
+
+The kill is jittered uniformly over one renewal interval, from a seeded
+generator. Without that, every trial kills at the same phase of the renewal
+cycle and the measured outage collapses to a single value — real, but not the
+distribution. The first version of this experiment used a fixed offset and
+produced fifteen outages within 4 ms of each other, which is what exposed the
+bias.
+
+Every trial also scrapes `tq_scheduler_is_leader` from all replicas before the
+kill and refuses to proceed unless the sum is exactly 1, so each reported trial
+carries evidence that the single-writer invariant held while it ran. Across the
+60 trials below it was 1 every time.
+
+| arm | replicas | signal | what it answers |
+| --- | ---: | --- | --- |
+| `none` | 2 | — | the natural gap between dispatches, the floor everything else is read against |
+| `graceful` | 2 | `SIGTERM` | what a rollout costs; the lease is released |
+| `crash` | 2 | `SIGKILL` | what a crash costs; nothing is released |
+| `single` | 1 | `SIGKILL` | what the lease is actually buying |
+
+**Results** (15 trials per arm, 4,000 tasks each, 5 s lease, 1.5 s renewal, 1 s
+standby poll):
+
+| arm | n | median outage | range | tasks unfinished |
+| --- | ---: | ---: | --- | ---: |
+| `none` | 15 | 6 ms *(largest natural gap)* | 2–33 ms | 0 |
+| `graceful` | 15 | **662 ms** | 135–971 ms | 0 |
+| `crash` | 15 | **4,537 ms** | 3,541–5,365 ms | 0 |
+| `single` | 15 | *never recovered* | — | **31,866** |
+
+Three things are worth drawing out.
+
+**The outage is not "one lease TTL", and the difference matters.** The obvious
+model — a crash costs a TTL — is wrong in both directions. The correct one has
+two terms:
+
+```
+outage = time until the lease is free + time until a standby next polls
+```
+
+A crash makes the first term `TTL − age of the last renewal`, uniform over
+`[TTL − renew, TTL]`. A graceful stop makes it zero, because the leader releases
+on the way out. Both then wait up to one `retry_interval` for a standby to
+notice. The predicted windows are therefore `[3.5 s, 6.0 s]` for a crash and
+`[0, 1.0 s]` for a rollout, and **all 15 trials in each arm fall inside them**.
+
+The practical consequence is that a rollout's cost is a *polling artefact*, not
+a property of the lease: 662 ms is simply half a poll interval. Publishing a
+notification on release would remove it almost entirely, which is why it appears
+in future work rather than as a tuning recommendation.
+
+**The floor is 6 ms, so the signal is unambiguous.** The natural largest gap
+between dispatches under this load is a median of 6 ms and never exceeded 33 ms.
+A crash outage is roughly **750× that floor**, so none of these numbers depends
+on separating a failover from ordinary scheduling jitter.
+
+**The control arm is the argument for the lease.** With one replica, no trial
+recovered at all. The queue stopped dispatching permanently and a median of
+2,213 of 4,000 tasks per trial — 31,866 in total — never reached a terminal
+state. Averaging those trials as a large finite number would misrepresent them
+entirely, so they are censored, and the chart draws them as a hatched bar
+spanning the axis rather than as a value.
+
+**Nothing was executed twice.** Across all 60 trials the duplicate-completion
+counter stayed at zero, and every trial in the three recovering arms finished
+all 4,000 tasks. That last property was not free; see Section 5.1.
+
+**Failover time tracks the lease, which makes it a tuning decision.** The crash
+arm was repeated at three lease TTLs, with the renewal interval held at
+`TTL / 3.3` and the standby poll at 1 s throughout:
+
+| lease TTL | n | median outage | range | predicted `[TTL − renew, TTL + retry]` | inside |
+| ---: | ---: | ---: | --- | --- | ---: |
+| 2 s | 12 | 1,942 ms | 1,837–2,746 | [1.4 s, 3.0 s] | 12/12 |
+| 5 s | 15 | 4,537 ms | 3,541–5,365 | [3.5 s, 6.0 s] | 15/15 |
+| 10 s | 12 | 8,196 ms | 7,046–9,844 | [7.0 s, 11.0 s] | 12/12 |
+
+**All 39 trials fall inside the envelope the two-term model predicts.** The
+medians sit a little below its midpoint at every TTL, and consistently so —
+0.97×, 0.91× and 0.82× the TTL respectively — which says the standby tends to
+find the lease sooner than a uniform poll offset would suggest. No mechanism is
+claimed for that; it is a small systematic offset in the right direction, and
+the envelope is the part the model is being tested on.
+
+The operational reading is a trade, not an optimum. A shorter lease shortens
+every crash outage and gives a healthy leader fewer renewal attempts to survive
+a slow Redis round trip before being deposed for no reason. The 5 s default with
+a 1.5 s renewal allows three such attempts, which is the reason it is the
+default rather than the 2 s that looks better in this table.
+
+![Failover outage by arm](images/failover_outage.png)
+
+![Failover time against lease TTL](images/failover_ttl_sensitivity.png)
+
+
 ## 5. Threats to validity
 
 ### 5.1 Corrections made during this study
 
-Three quantitative claims were found to be wrong after more data was collected.
+Three quantitative claims were found to be wrong after more data was collected,
+and two defects were found by the failover experiment rather than by review.
 
 **The bursty load confound** (Section 3.2): bursty experiments ran at 1.57×
 capacity while others sat at 1.25×, because the workload ignores its nominal
@@ -408,6 +597,30 @@ repetitions on the one workload already shown to require twenty-five. At n=25
 the correct figure is 8.4×. The direction held; the magnitude was inflated more
 than threefold, and the sleep-mode value it was measured against was a lucky
 draw — 0.099 ± 0.183 at n=25, a standard deviation larger than its own mean.
+
+**Two defects the failover experiment exposed** (Section 4.7). Neither was
+visible to testing or to reading the code.
+
+The first was a durability bug. Every killed-leader trial finished exactly one
+task short of the 4,000 submitted, which is a small enough discrepancy to be
+dismissed as noise and was not: `XREADGROUP` with `>` only delivers entries
+nobody has seen, so an ingress entry the dead leader read and never
+acknowledged belonged to a consumer name that would never return. The task had
+been accepted from the producer and was then never scheduled — not pending, not
+in flight, not dead-lettered, and counted by nothing. It was fixed with an
+`XAUTOCLAIM` pass over the ingress group, and the regression test was confirmed
+to fail with that pass removed.
+
+The second was a deadlock in the lease's campaign loop, on the one path that
+neither the integration tests nor an ordinary shutdown takes: a term that ends
+*by itself* while the lease is still healthy, which is exactly what a fenced
+leader does. The term's result was collected once inside a select and then
+waited for a second time, on a channel that had already been drained. A
+regression test that runs three consecutive self-ending terms reproduces it
+(one term instead of three) and now guards it.
+
+Both are worth reporting for the same reason as the quantitative corrections:
+the experiment earned its place by finding them, not only by producing a number.
 
 ### 5.2 Simulated execution
 
@@ -471,19 +684,32 @@ work and improved.
 
 1. **Single-node Redis.** No cluster, no failover. Redis failure modes are out of
    scope, and the Lua scripts, while declaring all their keys, have not been
-   validated against Redis Cluster key-slot constraints.
-2. **Single-writer scheduler.** Scheduling throughput is bounded by one process,
-   which bounds the scale at which these results apply.
+   validated against Redis Cluster key-slot constraints. This matters more since
+   Section 4.7: the fencing argument assumes Redis does not lose acknowledged
+   writes, which a Sentinel failover can violate.
+2. **One scheduler dispatches at a time.** Replicas buy availability, not
+   throughput. Scheduling capacity is still bounded by one process, which bounds
+   the scale at which these results apply.
 3. **At-least-once only.** Duplicate execution is expected; only completion
    recording is idempotent.
-4. **Fault injection is shallow.** Worker crashes and application errors only —
-   no Redis failover, network partition, or gray failure.
+4. **Fault injection is shallow.** Worker crashes, application errors, and now
+   scheduler kills — but no Redis failover, network partition, or gray failure.
+   Gray failure is the gap the fence is designed for and the one the experiment
+   does not reproduce: every kill here is clean, and a leader that is slow rather
+   than dead is harder to arrange than one that is gone.
 5. **No external baseline.** No comparison against Celery, Sidekiq or Temporal,
    so absolute throughput figures have no external reference point.
 6. **Timing is not reproducible**, only the workload. Cross-machine comparison is
    not supported.
 7. **The real-work comparison is narrow**: three of four workloads, a single
    offered load, one machine's core count.
+8. **Failover is measured beside the load, not under it.** Every trial kills the
+   leader while the queue is in steady state, so the reported outage is the time
+   to resume dispatching, not the time to work off the backlog that the outage
+   created.
+9. **All replicas share one host.** Co-locating them removes the network from
+   the failover path, so these outages are a lower bound on what a real
+   multi-node deployment would see.
 
 ## 6. Conclusions
 
@@ -496,6 +722,15 @@ that policy is irrelevant.
 Centralisation costs about 1.5% of throughput. Acting on it costs 6–10% and
 returns a 122× reduction in deadline misses (EDF) or 35× lower latency for small
 tenants (WFQ). FIFO alone does not repay its own overhead.
+
+**Availability is the other half of the centralisation argument, and it is
+bounded.** Enforcing the single-writer invariant costs under 1% of scheduling
+throughput, because the fence rides inside a script that has already paid for
+its round trip. A crash costs a median 4.5 s of dispatch outage against a 5 s
+lease; a rollout costs 0.66 s, and that figure is a polling artefact rather than
+a property of the lease. With no standby, the queue does not recover: a median
+of 2,213 of 4,000 tasks per trial were left permanently unscheduled. The
+single-writer scheduler is defensible, but only with a second replica behind it.
 
 **Metric choice can hide the effect entirely.** Jain's index over completed
 service reports 0.246 for every policy under tenant skew, because it is
@@ -519,8 +754,16 @@ natural next step, and Section 5.3 predicts it would recover much of EDF's lost
 advantage while leaving WFQ unchanged. Beyond that: ageing or lottery scheduling
 as a starvation-free alternative to strict priority; WF2Q or deficit round robin
 to quantify what self-clocking costs; a tenant-sharded scheduler to lift the
-single-writer bound; Redis failover and partition injection; and latency-aware
-autoscaling driven by queue depth rather than CPU.
+single-writer bound; and latency-aware autoscaling driven by queue depth rather
+than CPU.
+
+Section 4.7 adds three of its own. **Redis failover and partition injection**,
+because the fencing argument now depends on a store whose own failure modes are
+untested. **Gray failure**, meaning a leader that is slow rather than dead,
+which is the case the fence exists for and the one a clean `SIGKILL` cannot
+reproduce. And **a release notification**: a graceful handover currently costs
+up to one standby poll interval, which is a polling artefact rather than
+anything fundamental, and publishing on release would remove it.
 
 ## Appendix A: Reproducing these results
 
@@ -528,13 +771,29 @@ autoscaling driven by queue depth rather than CPU.
 make redis-up
 make bench-full REPETITIONS=25 RUN=main            # Section 4.1
 make sweep RUN=sweep-loads REPETITIONS=3           # Section 4.4
-make ceiling TASKS=20000                           # Section 4.6
 go run ./cmd/benchmark --schedulers none,fifo,priority,edf,wfq \
   --loads 0.75,1.0,1.25,1.5 --repetitions 3 --run-id control-arm
 go run ./cmd/benchmark --config experiments/realwork.yaml \
   --exec-mode cpu --repetitions 25 --run-id realwork    # Section 5.3
+
+# Section 4.6: the scheduler's own ceiling, and what the fence costs.
+go run ./cmd/schedbench --tasks 20000 --epoch 0 --csv results/ceiling-unfenced/ceiling.csv
+go run ./cmd/schedbench --tasks 20000 --epoch 1 --csv results/ceiling-fenced/ceiling.csv
+
+# Section 4.7: failover, and its sensitivity to the lease TTL.
+make failover REPETITIONS=15 RUN=failover
+go run ./cmd/failoverbench --arms crash --repetitions 12 --seed 2 \
+  --lease-ttl 2s  --lease-renew 600ms --run-id failover-ttl2s
+go run ./cmd/failoverbench --arms crash --repetitions 12 --seed 3 \
+  --lease-ttl 10s --lease-renew 3s    --run-id failover-ttl10s
+
 make plots RUN=main && make sweep-plots RUN=sweep-loads
+make failover-plots RUN=failover
 ```
+
+The failover runs start real scheduler processes and kill them, so they need a
+machine that is otherwise idle: the outage is a timing measurement, and
+anything else competing for CPU shows up in it.
 
 Source, configurations and full result schemas:
 <https://github.com/anishc23/distributed-task-queue-scheduler>
@@ -549,4 +808,13 @@ Source, configurations and full result schemas:
 | Real work, heavy-tailed, 25 reps | 200 | 400,000 |
 | Real work, initial comparison | 48 | 96,000 |
 | Real work, tenant isolation | 40 | 80,000 |
-| **Total** | **1,264** | **4,480,000** |
+| Scheduler failover, four arms | 60 | 240,000 |
+| Failover, lease-TTL sensitivity | 24 | 96,000 |
+| **Total** | **1,348** | **4,816,000** |
+
+Failover rows count tasks *submitted*: the single-replica control arm leaves a
+median of 2,213 per trial permanently unscheduled, which is the result rather
+than a defect of the accounting. Two further failover runs were discarded for
+the reasons given in Section 3.4 and are not counted here. The scheduler-ceiling
+measurements of Section 4.6 are also excluded, since they drive the critical
+path directly rather than running experiments.

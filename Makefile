@@ -21,6 +21,10 @@ SEED            ?= 42
 WORKERS         ?= 2
 CONCURRENCY     ?= 4
 REPETITIONS     ?= 1
+# Failover trials sample a distribution rather than repeat a deterministic
+# measurement, so one of them says nothing. Kept separate from REPETITIONS so
+# that `make failover` is useful without arguments.
+FAILOVER_REPETITIONS ?= 15
 RUN             ?=
 RESULTS_DIR     ?= results
 RUN_CONFIG      ?= experiments/quick.yaml
@@ -285,6 +289,24 @@ merge: ## Combine runs into one analysable directory: make merge OUT=final RUNS=
 	@test -x $(VENV_PY) || { echo "run 'make python-deps' first"; exit 1; }
 	$(VENV_PY) scripts/merge_runs.py --results-dir=$(RESULTS_DIR) --out=$(or $(OUT),merged) $(RUNS)
 
+.PHONY: failover
+failover: ## Measure the dispatch outage caused by killing the scheduler: make failover FAILOVER_REPETITIONS=15
+	@$(MAKE) --no-print-directory redis-check
+	@# This is a timing measurement on an otherwise idle machine, and it runs
+	@# unattended for tens of minutes. A laptop that idle-sleeps mid-run
+	@# produces trials reporting multi-minute "outages" that have nothing to do
+	@# with the scheduler, so hold sleep off where the platform lets us.
+	@command -v caffeinate >/dev/null && echo "running under caffeinate to prevent idle sleep" || true
+	$(shell command -v caffeinate >/dev/null && echo caffeinate -dims) \
+		$(GO) run ./cmd/failoverbench --redis-addr=$(REDIS_ADDR) \
+		--repetitions=$(FAILOVER_REPETITIONS) \
+		--run-id=$(or $(RUN),failover) --results-dir=$(RESULTS_DIR)
+
+.PHONY: failover-plots
+failover-plots: ## Chart the failover results: make failover-plots RUN=failover
+	@test -x $(VENV_PY) || { echo "run 'make python-deps' first"; exit 1; }
+	$(VENV_PY) scripts/plot_failover.py --results-dir=$(RESULTS_DIR) --run=$(or $(RUN),failover)
+
 .PHONY: ceiling
 ceiling: ## Measure the scheduler's own dispatch ceiling (no workers): make ceiling TASKS=20000
 	@$(MAKE) --no-print-directory redis-check
@@ -313,8 +335,12 @@ report-pdf: ## Rebuild docs/report.pdf from docs/report.md (needs pandoc + typst
 	@# gets its title from the metadata file instead, so strip everything before
 	@# the first section heading to avoid printing the title twice.
 	@awk 'f{print} /^## /{if(!f){f=1;print}}' docs/report.md > $(BIN)/report-body.md
+	@# --resource-path: the body is staged under $(BIN), so image paths written
+	@# relative to docs/ (which is where they resolve on GitHub) would otherwise
+	@# silently fall back to alt text in the PDF.
 	pandoc $(BIN)/report-body.md -o docs/report.pdf --pdf-engine=typst \
-		--metadata-file=docs/report-meta.yaml --toc --toc-depth=2
+		--resource-path=docs --metadata-file=docs/report-meta.yaml \
+		--toc --toc-depth=2
 	@rm -f $(BIN)/report-body.md
 	@echo "wrote docs/report.pdf"
 

@@ -29,6 +29,11 @@ type Keys struct {
 	Done       string // HASH task id -> completion unix millis (idempotency marker)
 	SchedState string // HASH policy state (e.g. WFQ virtual time)
 
+	// Leader election.
+	Leader      string // STRING "<owner>|<epoch>" with a TTL; holding it is leadership
+	LeaderEpoch string // STRING monotonic counter, one INCR per leadership grant
+	Fence       string // STRING highest epoch that has written; rejects older ones
+
 	// Accounting.
 	Stats         string // HASH counter name -> value
 	TenantService string // HASH tenant -> completed service millis
@@ -70,6 +75,9 @@ func NewKeys(s config.Streams) Keys {
 		Payloads:       p("payloads"),
 		Done:           p("done"),
 		SchedState:     p("sched_state"),
+		Leader:         p("leader"),
+		LeaderEpoch:    p("leader_epoch"),
+		Fence:          p("fence"),
 		Stats:          p("stats"),
 		TenantService:  p("tenant_service"),
 		TenantCount:    p("tenant_count"),
@@ -77,12 +85,29 @@ func NewKeys(s config.Streams) Keys {
 	}
 }
 
-// All returns every key, which is what Reset deletes.
+// All returns every key Reset deletes.
+//
+// LeaderEpoch and Fence are deliberately absent, and it is the one place this
+// package keeps state across a reset.
+//
+// Both are monotonic counters whose correctness depends on never going
+// backwards. Reset clears the lease itself, so a standby can take over
+// immediately, and the new leader is handed a strictly larger epoch than the
+// one any surviving process is carrying — which is precisely what fences the
+// old leader out. Clearing the counter would reissue an epoch a live process
+// may still hold; clearing the fence would reopen the window the fence exists
+// to close. Between them they are two small integers, so there is nothing to
+// reclaim by deleting them.
+//
+// This does not leak across experiments. The benchmark harness runs with
+// election disabled, where the guard is inert, and every experiment uses its
+// own namespace regardless.
 func (k Keys) All() []string {
 	return []string{
 		k.Ingress, k.Exec, k.Results, k.DeadLetter,
 		k.Pending, k.PendingAge, k.Payloads, k.Done, k.SchedState,
 		k.Stats, k.TenantService, k.TenantCount, k.InFlight,
+		k.Leader,
 	}
 }
 

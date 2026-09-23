@@ -1,9 +1,13 @@
 # Prometheus configuration for the Docker Compose stack.
 #
-# The scheduler is a single instance on a fixed name. Workers are scaled with
-# `docker compose up -d --scale worker=N`, so they are discovered through
-# Docker's DNS: querying the service name returns one A record per replica and
-# Prometheus creates a target for each.
+# Both schedulers are scraped, not just the leader. The useful alert is not
+# "this replica is not leading" but sum(tq_scheduler_is_leader) != 1, which
+# catches a leaderless queue and a split brain with the same expression, and
+# that only works if every replica is a target.
+#
+# Workers are scaled with `docker compose up -d --scale worker=N`, so they are
+# discovered through Docker's DNS: querying the service name returns one A
+# record per replica and Prometheus creates a target for each.
 
 global:
   scrape_interval: 5s
@@ -15,7 +19,7 @@ scrape_configs:
   - job_name: scheduler
     metrics_path: /metrics
     static_configs:
-      - targets: ["scheduler:9101"]
+      - targets: ["scheduler:9101", "scheduler-standby:9101"]
         labels:
           component: scheduler
 

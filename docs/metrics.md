@@ -44,6 +44,11 @@ what makes starvation legible in a dashboard.
 | `tq_longest_pending_wait_seconds` | gauge | — | Age of the oldest task currently pending. |
 | `tq_max_observed_wait_seconds` | gauge | — | Longest pending wait seen since this process started. Monotonic; the primary starvation indicator. |
 | `tq_recovery_reclaimed_total` | counter | — | Execution-stream entries reclaimed after exceeding the visibility timeout. |
+| `tq_ingress_reclaimed_total` | counter | — | Ingress entries reclaimed from a scheduler that died before acknowledging them. A burst after a failover is expected; a sustained rate means schedulers are dying mid-batch. |
+| `tq_scheduler_is_leader` | gauge | — | 1 when this replica holds the dispatch lease, 0 when it is standing by. |
+| `tq_scheduler_leader_epoch` | gauge | — | Fencing token of this replica's current term; 0 when not leading. Compare across replicas to see which one believes it is newest. |
+| `tq_scheduler_leader_transitions_total` | counter | — | Leadership changes seen by this process, counting acquisitions and losses. |
+| `tq_scheduler_fenced_operations_total` | counter | — | Writes refused because a newer epoch had already taken over. Non-zero means a deposed leader tried to act and was stopped. |
 | `tq_dispatch_errors_total` | counter | — | Errors raised by the dispatch loop. Should stay at zero. |
 | `tq_duplicate_admissions_total` | counter | — | Ingress entries rejected because the task was already known. Non-zero after a scheduler crash and restart, which is expected. |
 
@@ -81,6 +86,37 @@ All three histograms use exponential buckets from 1 ms to roughly 65 s
 (`prometheus.ExponentialBuckets(0.001, 2, 17)`). That range covers both the
 sub-second simulated tasks and the pathological queueing delays that starvation
 experiments are meant to expose.
+
+## Leadership
+
+Every scheduler replica exposes `tq_scheduler_is_leader`, including the ones
+standing by, and the reason is that the useful alert is not about any single
+replica:
+
+```promql
+# The one expression worth alerting on. 0 means nothing is dispatching;
+# 2 or more means a split brain, which the fence should have prevented.
+sum(tq_scheduler_is_leader) != 1
+```
+
+Alerting on `tq_scheduler_is_leader == 0` instead would fire constantly, because
+a healthy standby reports exactly that. This is also why a standby's readiness
+probe passes: an unready pod is dropped from the Service, which would stop
+Prometheus scraping the metric that tells you who leads.
+
+```promql
+# Failovers over the last hour. Each one is counted twice, once as a loss and
+# once as an acquisition, so divide by two for the number of handovers.
+sum(increase(tq_scheduler_leader_transitions_total[1h])) / 2
+
+# A deposed leader tried to write and was refused. Rare and benign in itself,
+# but a sustained rate means a replica is repeatedly being paused past its
+# lease -- an overloaded host, or a TTL set too low for this environment.
+rate(tq_scheduler_fenced_operations_total[5m]) > 0
+
+# Tasks stranded by a dying scheduler and recovered by its successor.
+increase(tq_ingress_reclaimed_total[10m]) > 0
+```
 
 ## Useful queries
 

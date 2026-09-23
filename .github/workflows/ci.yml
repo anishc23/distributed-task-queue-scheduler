@@ -42,6 +42,14 @@ jobs:
           go vet ./...
           go vet -tags integration ./...
 
+      # staticcheck catches what vet does not: unused code, impossible type
+      # assertions, misuse of the standard library. Pinned, because a linter
+      # that silently gains rules turns an unrelated push into a red build.
+      - name: staticcheck
+        run: |
+          go run honnef.co/go/tools/cmd/staticcheck@2025.1.1 ./...
+          go run honnef.co/go/tools/cmd/staticcheck@2025.1.1 -tags integration ./...
+
       - name: go mod tidy is up to date
         run: |
           go mod tidy
@@ -191,6 +199,41 @@ jobs:
           test -s /tmp/wfq.yaml
           grep -q -- '--policy=wfq' /tmp/wfq.yaml
           echo "manifests render and the overlay applies the wfq policy"
+
+      # The scheduler's single-writer invariant is enforced by the lease, not by
+      # replicas: 1. If a change ever leaves two replicas running with election
+      # off, two schedulers rank against divergent virtual clocks and nothing
+      # fails loudly, so the check belongs in CI rather than in a reviewer's head.
+      - name: Scheduler high availability is coherent
+        run: |
+          python3 - <<'PY'
+          import re, sys
+
+          docs = open("/tmp/base.yaml").read().split("\n---\n")
+
+          def find(kind, name):
+              for d in docs:
+                  if re.search(r"^kind: %s$" % kind, d, re.M) and re.search(r"^  name: %s$" % name, d, re.M):
+                      return d
+              return None
+
+          dep = find("Deployment", "scheduler")
+          if dep is None:
+              sys.exit("scheduler Deployment not found in the rendered base")
+          replicas = int(re.search(r"^  replicas: (\d+)$", dep, re.M).group(1))
+
+          cm = find("ConfigMap", "taskqueue-config")
+          if cm is None:
+              sys.exit("taskqueue-config ConfigMap not found")
+          block = re.search(r"leader_election:\n(?:\s+#.*\n|\s+\w+:.*\n)+", cm)
+          elected = bool(block) and re.search(r"enabled:\s*true", block.group(0)) is not None
+
+          if replicas > 1 and not elected:
+              sys.exit("scheduler runs %d replicas with leader election off: two schedulers would rank against divergent virtual clocks" % replicas)
+          if find("PodDisruptionBudget", "scheduler") is None:
+              sys.exit("scheduler has no PodDisruptionBudget, so a node drain can take every replica at once")
+          print("scheduler: %d replicas, leader election enabled=%s, PDB present" % (replicas, elected))
+          PY
 
       - name: Shell scripts are syntactically valid
         run: |
