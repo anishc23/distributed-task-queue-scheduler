@@ -48,7 +48,7 @@ what makes starvation legible in a dashboard.
 | `tq_scheduler_is_leader` | gauge | — | 1 when this replica holds the dispatch lease, 0 when it is standing by. |
 | `tq_scheduler_leader_epoch` | gauge | — | Fencing token of this replica's current term; 0 when not leading. Compare across replicas to see which one believes it is newest. |
 | `tq_scheduler_leader_transitions_total` | counter | — | Leadership changes seen by this process, counting acquisitions and losses. |
-| `tq_scheduler_fenced_operations_total` | counter | — | Writes refused because a newer epoch had already taken over. Non-zero means a deposed leader tried to act and was stopped. |
+| `tq_scheduler_fenced_operations_total` | counter | — | Writes refused because a newer epoch had already taken over. Non-zero means a deposed leader tried to act and was stopped. It increments once per term, not once per refused write, because the first refusal ends the term. In the measured gray-failure experiment this fired in 11 of 15 trials; in the other 4 the process's own lease renewal noticed first. |
 | `tq_dispatch_errors_total` | counter | — | Errors raised by the dispatch loop. Should stay at zero. |
 | `tq_duplicate_admissions_total` | counter | — | Ingress entries rejected because the task was already known. Non-zero after a scheduler crash and restart, which is expected. |
 

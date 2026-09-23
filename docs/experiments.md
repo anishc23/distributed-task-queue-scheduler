@@ -340,6 +340,54 @@ the analysis could do.
 | `graceful` | 2 | `SIGTERM` | What does a rollout cost? The leader releases the lease on the way out. |
 | `crash` | 2 | `SIGKILL` | What does a crash cost? Nothing is released, so Redis must expire the key. |
 | `single` | 1 | `SIGKILL` | What is the lease buying? Nothing takes over. |
+| `pause` | 2 | `SIGSTOP` then `SIGCONT` | What is the *fence* buying? The leader is frozen past its lease, replaced, and then resumed still believing it leads. |
+
+### The gray failure, and why it needed its own arm
+
+The first four arms all kill the leader, and a lease alone would have handled
+every one of them: a dead process writes nothing. That is the weakness in
+demonstrating a fencing token against a `SIGKILL` — the mechanism is never
+actually loaded.
+
+The failure a fence exists for is the one where the deposed leader is *still
+running*. It was stopped long enough for its lease to expire — a
+garbage-collection pause, a suspended container, a host that swapped — a
+standby took over, and then it resumed, still holding its old epoch and with no
+way to know. Cancelling its context cannot stop it, because it was not running
+to observe the cancellation, and having it re-check whether it still leads is no
+better: any such check is separated from the write that follows it by a window
+in which the answer can change. The check has to happen at the resource, inside
+the same atomic unit as the write.
+
+The `pause` arm produces that state with real signals. The leader is stopped
+with `SIGSTOP` for twice its lease TTL and then continued with `SIGCONT`. Three
+things are verified rather than assumed, because a fault-injection experiment
+that does not confirm the fault occurred can pass while testing nothing:
+
+1. the victim really is stopped, read from the operating system's process state
+   rather than inferred from a signal call that returned no error;
+2. a *different* process holds the lease before the victim is resumed, so the
+   resumed process is genuinely superseded and not merely slow;
+3. after the resume, exactly one process still claims leadership.
+
+### The dispatch log proves the invariant, rather than a counter asserting it
+
+Every execution-stream entry carries the epoch that dispatched it. The fence's
+guarantee is that once epoch *N* has written, nothing below *N* ever writes
+again, which makes the invariant checkable directly from the artefact: replay
+the stream in order and the epochs must never go backwards. The harness counts
+inversions in every arm and aborts the run on the first one; the plotting script
+re-checks the same column and refuses to chart a run that violates it.
+
+This is worth more than the metric counter it replaces. A counter lives in a
+process that has since exited, and it records that the system *noticed*
+something; the stream records what the system actually *did*, and anyone can
+re-derive the check from the committed CSV.
+
+Entries with no epoch are skipped rather than counted as zero. Those are
+worker-initiated retries, which no leader dispatched and which the fence
+therefore does not govern; counting them would manufacture an inversion at every
+retry and make the check meaningless.
 
 ### Why the kill time is jittered
 
@@ -390,6 +438,19 @@ The fix is an `XAUTOCLAIM` pass over the ingress group, run by the leader, with
 `scheduler.ingest_reclaim_min_idle` defaulting to 2s. The same trials now
 complete all 4,000 tasks. See `TestPromotedEngineReclaimsTheDeadLeadersIngressEntries`,
 which was confirmed to fail with the reclaim loop removed.
+
+The `pause` arm answered the question the other four could not. In **11 of 15
+trials the resumed leader reached Redis with a write before its own lease
+renewal had noticed anything was wrong**, and the epoch check at the resource is
+what refused it; in the remaining 4 it stood down first. Both outcomes are
+correct, but the split is the measurement: it says that a deployment with leases
+and no fencing would have admitted a second writer in eleven of fifteen cases.
+No task was dispatched under a superseded epoch in any arm.
+
+Deleting the fence and re-running the deterministic version of that scenario
+(`TestAResumedLeaderCannotDispatchAfterBeingSuperseded`) puts **172 of 400 tasks
+on the wire under a dead term**, which is both the counterfactual and the
+evidence that the test has teeth.
 
 ## Known limitations
 

@@ -853,17 +853,32 @@ make failover REPETITIONS=15
 make failover-plots RUN=failover
 ```
 
-Four arms, each answering a different question:
+Five arms, each answering a different question:
 
-| Arm | What is killed | Question |
+| Arm | What happens to the leader | Question |
 | --- | --- | --- |
 | `none` | nothing | What is the natural gap between dispatches? Every other number is read against this. |
-| `graceful` | `SIGTERM` the leader | What does a rollout cost? The lease is released. |
-| `crash` | `SIGKILL` the leader | What does a crash cost? Nothing is released, so the TTL has to expire. |
-| `single` | `SIGKILL` the only replica | What is the lease actually buying? |
+| `graceful` | `SIGTERM` | What does a rollout cost? The lease is released. |
+| `crash` | `SIGKILL` | What does a crash cost? Nothing is released, so the TTL has to expire. |
+| `single` | `SIGKILL`, one replica | What is the lease actually buying? |
+| `pause` | `SIGSTOP` past the lease, then `SIGCONT` | What is the *fence* buying? |
 
-Results: [Failover and the cost of a crash](#failover-and-the-cost-of-a-crash),
-and section 4.7 of the [report](docs/report.md).
+The last arm is the one that loads the fencing token. The other four kill the
+leader, and a lease on its own would have handled every one of them, because a
+dead process writes nothing. A leader that was merely *frozen* comes back still
+believing it leads, and nothing inside that process can tell it otherwise — it
+was not running to be told. That is the case the fence exists for, and a clean
+`SIGKILL` cannot produce it.
+
+Every execution-stream entry is stamped with the epoch that dispatched it, so
+the invariant is checked against the dispatch log rather than against a counter:
+replay the stream and the epochs must never go backwards. Removing the fence
+makes the violation appear immediately — 172 of 400 entries dispatched under a
+dead term — which is how the check was shown to have teeth.
+
+Results: [Failover and the cost of a crash](#failover-and-the-cost-of-a-crash)
+and [The failure the fence is for](#the-failure-the-fence-is-for), or sections
+4.7 and 4.8 of the [report](docs/report.md).
 
 ---
 
@@ -1531,10 +1546,11 @@ make failover-plots RUN=failover
 
 | arm | n | median outage | range | tasks unfinished |
 | --- | ---: | ---: | --- | ---: |
-| no kill *(largest natural gap)* | 15 | 6 ms | 2–33 ms | 0 |
-| `SIGTERM` the leader | 15 | **662 ms** | 135–971 ms | 0 |
-| `SIGKILL` the leader | 15 | **4,537 ms** | 3,541–5,365 ms | 0 |
-| `SIGKILL`, one replica | 15 | **never recovered** | — | **31,866** |
+| no kill *(largest natural gap)* | 15 | 6 ms | 5–19 ms | 0 |
+| `SIGTERM` the leader | 15 | **663 ms** | 132–976 ms | 0 |
+| `SIGKILL` the leader | 15 | **4,362 ms** | 3,536–4,951 ms | 0 |
+| `SIGSTOP` past the lease, then `SIGCONT` | 15 | **3,879 ms** | 3,524–4,860 ms | 0 |
+| `SIGKILL`, one replica | 15 | **never recovered** | — | **37,866** |
 
 **The outage is not "one lease TTL".** That model is wrong in both directions.
 The right one has two terms:
@@ -1550,35 +1566,83 @@ standby to notice. Predicted windows: **[3.5 s, 6.0 s]** for a crash and
 **[0, 1.0 s]** for a rollout — and **all 15 trials in each arm land inside
 them**.
 
-So a rollout's 662 ms is a *polling artefact*, not a property of the lease: it
+So a rollout's 663 ms is a *polling artefact*, not a property of the lease: it
 is half a poll interval. Lower `retry_interval` to shrink it, or publish on
 release to remove it almost entirely — which is listed as future work rather
 than as a tuning knob, because the measurement is what identified it.
 
 **The floor is 6 ms**, so nothing here depends on telling a failover apart from
-ordinary jitter: a crash outage is about 750× the natural gap.
+ordinary jitter: a crash outage is about 730× the natural gap.
 
 **The single-replica arm is the argument for the lease.** No trial recovered.
-The queue stopped dispatching permanently, and a median of 2,213 of 4,000 tasks
+The queue stopped dispatching permanently, and a median of 2,613 of 4,000 tasks
 per trial never reached a terminal state. Those trials are **censored**, not
 averaged as a large number — the chart draws them as a hatched bar spanning the
 axis, because a finite bar would be a lie.
 
-Across all 60 trials the duplicate-completion counter stayed at zero, every
-trial scraped `sum(tq_scheduler_is_leader) == 1` before its kill, and every
-trial in the three recovering arms finished all 4,000 tasks. The last of those
-was not free — see [what a promoted standby has to do](#what-a-promoted-standby-has-to-do).
+The `pause` arm lands in the same window as `crash`, and it should: up to the
+moment of takeover they are the same experiment, since a leader that stops
+renewing has its grant expired by Redis whether it is dead or merely frozen.
+What differs is what happens afterwards, which is the next section.
+
+Across all 75 trials the duplicate-completion counter stayed at zero, every
+trial scraped `sum(tq_scheduler_is_leader) == 1` before its kill, no task was
+dispatched under a superseded epoch, and every trial in the four recovering arms
+finished all 4,000 tasks. The last of those was not free — see
+[what a promoted standby has to do](#what-a-promoted-standby-has-to-do).
 
 ![Dispatch outage by failure mode](docs/images/failover_outage.png)
+
+### The failure the fence is for
+
+The four arms above all kill the leader, and a lease alone would have handled
+every one of them. The case a fencing token exists for is the leader that is
+**frozen** rather than dead: stopped past its lease, replaced, and then resumed
+still believing it leads. It cannot be told to stop, because it was not running
+to be told, and it cannot usefully check whether it still leads either — any
+such check is separated from the write that follows it by a window in which the
+answer changes. The check has to be at the resource.
+
+The `pause` arm stops the leader with `SIGSTOP` for twice its lease (10.2 s
+measured), confirms from the operating system that it really is stopped and that
+a *different* process has taken the lease, then resumes it with `SIGCONT` and
+gives it three seconds to misbehave.
+
+| what stopped the leader that came back believing it still led | trials |
+| --- | ---: |
+| **refused by the fence**, at the resource | **11 / 15** |
+| stood down first, on its own failed lease renewal | 4 / 15 |
+
+Both are correct outcomes. But in **11 of 15 trials the resumed leader reached
+Redis with a write before its own lease machinery had noticed anything was
+wrong** — those are the cases where leases without fencing would have admitted a
+second writer. The margin is a single millisecond:
+
+```
+22:53:55.978  resumed the superseded leader   owner=sched-1 successor=sched-0
+22:53:55.978  lost the scheduler lease        owner=sched-1 epoch=1
+22:53:55.978  fenced out by a newer epoch, standing down   operation=dispatch
+```
+
+No task was dispatched under a superseded epoch, in this arm or any other. The
+matching integration test drives an engine into the same state deterministically
+and was confirmed to fail with the fence deleted: **172 of 400 tasks dispatched
+under a dead term**.
+
+What this does not cover: a stopped process resumes with its Redis connection
+intact, so a network partition — which breaks the path to the store as well —
+remains future work rather than something approximated here.
+
+![What stopped the superseded leader](docs/images/failover_gray.png)
 
 **Failover time tracks the lease, so it is a tuning decision.** The crash arm
 repeated at three TTLs, renewal held at `TTL / 3.3`, standby poll at 1 s:
 
 | lease TTL | n | median outage | range | predicted `[TTL − renew, TTL + retry]` | inside |
 | ---: | ---: | ---: | --- | --- | ---: |
-| 2 s | 12 | 1,942 ms | 1,837–2,746 | [1.4 s, 3.0 s] | 12/12 |
-| 5 s | 15 | 4,537 ms | 3,541–5,365 | [3.5 s, 6.0 s] | 15/15 |
-| 10 s | 12 | 8,196 ms | 7,046–9,844 | [7.0 s, 11.0 s] | 12/12 |
+| 2 s | 12 | 1,850 ms | 1,437–1,960 | [1.4 s, 3.0 s] | 12/12 |
+| 5 s | 15 | 4,362 ms | 3,536–4,951 | [3.5 s, 6.0 s] | 15/15 |
+| 10 s | 12 | 8,259 ms | 7,172–9,343 | [7.0 s, 11.0 s] | 12/12 |
 
 All 39 trials land inside the envelope. A shorter lease means faster recovery
 and fewer renewal attempts before a healthy leader is deposed over a slow round
@@ -1767,7 +1831,8 @@ the run has not been plotted.
 | Metrics | Scheduler and worker expose disjoint instrument sets; unregistered instruments are safe to record on; starved tenants appear as zeros; the max-wait gauge never decreases; the endpoint serves metrics and both probes |
 | Domain | JSON round-trips, validation, derived latency and deadline logic |
 | Leader election | Exactly one of two contenders may hold the lease; sixteen concurrent acquisitions grant exactly one; a lapsed lease expires and is taken over within its TTL; renewal keeps a healthy leader in place; a stale release cannot evict its own successor; a renew interval at or above the TTL is rejected at construction |
-| Fencing | A superseded epoch's dispatch is refused **and leaves the pending set untouched**, so the refusal has no side effects; the current epoch is never fenced against itself; `NoEpoch` (election off) is never fenced at all; a stale state flush cannot roll the virtual clock backwards; a flush replaces rather than merges, so no tenant's finish tag survives from an older term |
+| Fencing | A superseded epoch's dispatch is refused **and leaves the pending set untouched**, so the refusal has no side effects; the current epoch is never fenced against itself; `NoEpoch` (election off) is never fenced at all; a stale state flush cannot roll the virtual clock backwards; a flush replaces rather than merges, so no tenant's finish tag survives from an older term; every dispatched entry is stamped with the term that wrote it, and stamped zero when election is off |
+| Gray failure | A leader superseded while still running is refused at the resource and stands down, with the proof taken from the dispatch log rather than the engine's opinion of itself: the epochs on the execution stream never go backwards, and every task is dispatched exactly once. Its lease renewal is configured not to fire within the test window, so the fence is the only thing that can stop it. Deleting the fence makes the test fail with 172 of 400 entries dispatched under a dead term |
 | Failover | Two engines: one leads, the other stands by, and after the leader departs all 80 tasks are dispatched exactly once; a promoted standby inherits the virtual clock rather than restarting it (verified with equal-sized batches, so "unchanged" would fail); a promoted standby reclaims ingress entries the dead leader never acknowledged |
 | Redis integration | Full ingress-to-results flow; atomic dispatch loses nothing; `max_in_flight` enforcement; idempotent completion under duplicate delivery; idempotent admission; retry counting through to dead-lettering with metadata; `XAUTOCLAIM` reclaim; scheduler state persistence; namespace reset |
 | End-to-end | The benchmark harness completes every task and writes well-formed CSVs; a worker abandoning 100% of attempts dead-letters everything with correct attempt counts; with 35% intermittent failures every task still reaches a terminal state and no task is recorded twice |
@@ -1800,7 +1865,10 @@ The failover tests are written to be discriminating rather than merely green.
 The virtual-clock test uses two equal-sized batches specifically so that a
 promoted standby which reset the clock would land on the same number as one that
 inherited it; the assertion demands a strictly higher value. The ingress-reclaim
-test was confirmed to fail with the reclaim loop removed before it was kept.
+test was confirmed to fail with the reclaim loop removed before it was kept. The
+gray-failure test was confirmed the same way, by deleting the fence and watching
+it fail — which is also where the 172-entry counterfactual comes from. A test
+that has never been seen to fail is not evidence that the thing it guards works.
 
 ---
 
@@ -1865,7 +1933,8 @@ test was confirmed to fail with the reclaim loop removed before it was kept.
   *available*; it does not make it *scalable*, and sharding is the only way to
   get past one process without giving up global ordering.
 - Redis failover and network-partition injection. Failover of the scheduler is
-  now measured; failover of the store it depends on is not, and the fencing
+  now measured, including the gray failure where the leader is frozen rather
+  than killed; failover of the store it depends on is not, and the fencing
   argument assumes a Redis that does not lose writes on promotion.
 - Real task bodies alongside the simulated ones, to check how far the
   sleep-based conclusions transfer.

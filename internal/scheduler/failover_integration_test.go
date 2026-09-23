@@ -90,6 +90,15 @@ func newHarness(t *testing.T) *harness {
 
 func (h *harness) engine(t *testing.T, name string, ttl time.Duration) *scheduler.Engine {
 	t.Helper()
+	eng, _ := h.engineWithMetrics(t, name, ttl, ttl/4, ttl/8)
+	return eng
+}
+
+// engineWithMetrics builds an engine with the lease timings spelled out and
+// hands back its metrics, so a test can read what the engine recorded about
+// itself rather than only what it did to Redis.
+func (h *harness) engineWithMetrics(t *testing.T, name string, ttl, renew, retry time.Duration) (*scheduler.Engine, *metrics.Metrics) {
+	t.Helper()
 	pol, err := scheduler.New(scheduler.Options{
 		Policy:              h.cfg.Policy,
 		TenantWeights:       h.cfg.TenantWeights,
@@ -100,25 +109,26 @@ func (h *harness) engine(t *testing.T, name string, ttl time.Duration) *schedule
 	}
 	l, err := lease.New(lease.Options{
 		Redis: h.rdb, Keys: h.leaseK, Owner: name,
-		TTL: ttl, Renew: ttl / 4, Retry: ttl / 8,
+		TTL: ttl, Renew: renew, Retry: retry,
 		Logger: discardLogger(),
 	})
 	if err != nil {
 		t.Fatalf("build lease: %v", err)
 	}
+	m := metrics.New(metrics.Options{Component: metrics.ComponentScheduler, Scheduler: h.cfg.Policy})
 	eng, err := scheduler.NewEngine(scheduler.EngineOptions{
 		Broker:   h.br,
 		Policy:   pol,
 		Config:   h.cfg,
 		Logger:   discardLogger(),
-		Metrics:  metrics.New(metrics.Options{Component: metrics.ComponentScheduler, Scheduler: h.cfg.Policy}),
+		Metrics:  m,
 		Consumer: name,
 		Lease:    l,
 	})
 	if err != nil {
 		t.Fatalf("build engine: %v", err)
 	}
-	return eng
+	return eng, m
 }
 
 func (h *harness) submit(t *testing.T, ctx context.Context, n int, tenant string) {

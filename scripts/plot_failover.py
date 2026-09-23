@@ -20,6 +20,10 @@ The arms answer different questions and must be read together:
     single    the only scheduler is killed. Nothing takes over at all, so the
               outage has no end and these trials are censored rather than
               plotted as a number.
+    pause     the leader is stopped for longer than its lease and then resumed.
+              It comes back still believing it leads, which is the only arm in
+              which the fencing token does any work: every other arm kills the
+              leader outright, and a dead process needs no fencing.
 
 Plotting a censored arm as a finite bar would be the most misleading thing this
 script could do, so the single arm is drawn as a hatched bar spanning the axis
@@ -41,14 +45,16 @@ try:
 except ImportError as exc:  # pragma: no cover
     sys.exit(f"missing Python dependency: {exc}\nInstall with: make python-deps")
 
-ARM_ORDER = ["none", "graceful", "crash", "single"]
+ARM_ORDER = ["none", "graceful", "crash", "pause", "single"]
 ARM_LABELS = {
     "none": "No kill\n(largest natural gap)",
     "graceful": "SIGTERM\n(lease released)",
     "crash": "SIGKILL\n(lease expires)",
+    "pause": "SIGSTOP then SIGCONT\n(leader returns stale)",
     "single": "SIGKILL,\none replica",
 }
-PALETTE = {"none": "#4C72B0", "graceful": "#55A868", "crash": "#DD8452", "single": "#C44E52"}
+PALETTE = {"none": "#4C72B0", "graceful": "#55A868", "crash": "#DD8452",
+           "pause": "#8172B3", "single": "#C44E52"}
 
 
 def setup_style() -> None:
@@ -112,6 +118,30 @@ def check_invariant(df: pd.DataFrame) -> None:
             f"{len(bad)} of {len(df)} trials did not have exactly one leader before the kill "
             "(0 = leaderless, 2 = split brain). The results are not trustworthy.")
 
+    # The single-writer invariant, read back from the dispatch log. Every entry
+    # carries the epoch that dispatched it, so an entry written under a term
+    # older than one already recorded is a superseded leader that got through.
+    # If that ever happens the charts are beside the point.
+    if "epoch_inversions" in df.columns:
+        violated = df[df["epoch_inversions"].fillna(0) > 0]
+        if not violated.empty:
+            detail = ", ".join(f"{r['arm']} rep {int(r['rep'])}: {int(r['epoch_inversions'])}"
+                               for _, r in violated.iterrows())
+            raise SystemExit(
+                f"{len(violated)} trial(s) dispatched tasks under a superseded epoch ({detail}). "
+                "The single-writer invariant was violated; these results must not be charted.")
+
+    # The resumed leader in the pause arm must have stood down. Two leaders
+    # after a resume is the split brain the fence exists to make harmless, and
+    # a run that recorded one is not reporting a working system.
+    if "leaders_after_resume" in df.columns:
+        resumed = df[df["arm"] == "pause"]
+        bad_resume = resumed[resumed["leaders_after_resume"] != 1]
+        if not bad_resume.empty:
+            raise SystemExit(
+                f"{len(bad_resume)} of {len(resumed)} pause trials did not end with exactly one "
+                "leader after the superseded leader resumed. The results are not trustworthy.")
+
 
 def plot_outage(df: pd.DataFrame, out_dir: Path, formats: list[str]) -> None:
     """One bar per arm, with every trial drawn over it.
@@ -172,6 +202,63 @@ def plot_outage(df: pd.DataFrame, out_dir: Path, formats: list[str]) -> None:
     ax.set_ylim(0, ceiling)
     ax.set_title("What a scheduler failure costs", fontsize=15)
     save(fig, out_dir, "failover_outage", formats)
+
+
+def plot_gray_failure(df: pd.DataFrame, out_dir: Path, formats: list[str]) -> None:
+    """What stopped the superseded leader, and whether anything got through.
+
+    The outage chart cannot show this arm's actual result. Its outage is the
+    same quantity as the crash arm's and looks the same on a bar chart; what is
+    different is what happened *after* the successor took over, and that is a
+    property of which mechanism caught the resumed process rather than of any
+    duration.
+
+    Two outcomes are possible and both are correct. Either the resumed leader
+    reached Redis first and was refused there, or its own lease renewal ran
+    first and it stood down before attempting anything. The split matters
+    because the first group is exactly the set of trials in which a lease
+    without a fence would have let a second writer through.
+    """
+    sub = df[df["arm"] == "pause"]
+    if sub.empty or "fenced_operations" not in sub.columns:
+        return
+
+    fenced = int((sub["fenced_operations"].fillna(0) > 0).sum())
+    stood_down = len(sub) - fenced
+    inversions = int(sub["epoch_inversions"].fillna(0).sum()) if "epoch_inversions" in sub.columns else 0
+    all_inversions = int(df["epoch_inversions"].fillna(0).sum()) if "epoch_inversions" in df.columns else 0
+
+    fig, ax = plt.subplots(figsize=(9.0, 3.9))
+    labels = ["Refused by the fence\nat the resource",
+              "Stood down first, on its\nown failed lease renewal"]
+    values = [fenced, stood_down]
+    colors = ["#8172B3", "#B0B0B0"]
+    bars = ax.barh(labels, values, color=colors, alpha=0.9, height=0.55)
+    for bar, v in zip(bars, values):
+        if v == 0:
+            continue
+        ax.text(bar.get_width() - 0.15, bar.get_y() + bar.get_height() / 2,
+                f"{v} / {len(sub)}", ha="right", va="center",
+                fontsize=13, weight="bold", color="white")
+
+    ax.set_xlim(0, len(sub))
+    ax.set_xlabel(f"trials (n = {len(sub)})")
+    ax.set_title("What stopped the leader that came back believing it still led", fontsize=14)
+    ax.invert_yaxis()
+    ax.grid(axis="y", visible=False)
+
+    # The outcome, stated on the figure as a footnote. Both rows above are
+    # successes; this is the line that says so. It is placed in figure
+    # coordinates rather than axis ones, because the y axis is inverted here
+    # and a negative axis coordinate lands above the title rather than below
+    # the plot.
+    fig.subplots_adjust(bottom=0.32)
+    fig.text(0.012, 0.035,
+             f"Tasks dispatched under a superseded epoch: {inversions} in this arm, "
+             f"{all_inversions} across all {len(df)} trials.",
+             fontsize=10.5, color="#444444", ha="left", va="bottom")
+
+    save(fig, out_dir, "failover_gray", formats)
 
 
 def plot_ttl_sensitivity(frames: dict[str, pd.DataFrame], out_dir: Path, formats: list[str]) -> None:
@@ -237,6 +324,15 @@ def summary_table(df: pd.DataFrame, out_dir: Path) -> pd.DataFrame:
             "max_gap_median_ms": round(sub["max_gap_ms"].median(), 1),
             "tasks_unfinished_mean": round(sub["unfinished"].mean(), 2),
             "duplicate_completions_total": int(sub["duplicate_completions"].sum()),
+            # Always zero if the fence works. Reported anyway, in every arm,
+            # because an invariant that is only printed when it is expected to
+            # be interesting is not being reported at all.
+            "epoch_inversions_total": int(sub["epoch_inversions"].fillna(0).sum())
+            if "epoch_inversions" in sub.columns else 0,
+            # How often the fence, rather than the resumed process's own lease
+            # renewal, was what stopped it. Only meaningful in the pause arm.
+            "fenced_trials": int((sub["fenced_operations"].fillna(0) > 0).sum())
+            if "fenced_operations" in sub.columns else 0,
         })
     tbl = pd.DataFrame(rows)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -273,6 +369,7 @@ def main() -> int:
           f"at a {df['lease_ttl_ms'].mode().iloc[0]:,.0f} ms lease TTL")
     setup_style()
     plot_outage(df, out_dir, formats)
+    plot_gray_failure(df, out_dir, formats)
 
     frames = {run_dir.name: df}
     for name in (r.strip() for r in args.ttl_runs.split(",") if r.strip()):

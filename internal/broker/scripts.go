@@ -110,6 +110,17 @@ return 1
 // tasks chosen by an out-of-date virtual clock, and the tasks would be real
 // work, already executed by the time anyone noticed.
 //
+// Every entry is stamped with the epoch that dispatched it. That field is not
+// needed to run the queue; it is there so the dispatch log is self-evidencing.
+// The fence's claim is that no superseded leader can write after its successor
+// has, and with the term recorded on each entry that claim is checkable from
+// the stream alone: read the entries in order and the epochs must never go
+// backwards. An assertion that can be re-derived from the artefact is worth
+// more than a counter in a process that has since exited.
+//
+// Retries are re-queued by workers rather than by a leader, so they carry no
+// epoch; a reader treats a missing field as "not attributable to a term".
+//
 // KEYS: pending, pendingAge, payloads, execStream, stats, inflight, fence
 // ARGV: maxCount, maxInFlight (0 = unlimited), nowMillis, maxLen (0 = no trim), epoch
 // Returns a flat array of {member, score, payload} triples that were dispatched.
@@ -155,10 +166,10 @@ for i = 1, maxCount do
     if payload then
       if maxLen > 0 then
         redis.call('XADD', execStream, 'MAXLEN', '~', maxLen, '*',
-                   'task', payload, 'dispatched_at_ms', nowMillis)
+                   'task', payload, 'dispatched_at_ms', nowMillis, 'epoch', epoch)
       else
         redis.call('XADD', execStream, '*',
-                   'task', payload, 'dispatched_at_ms', nowMillis)
+                   'task', payload, 'dispatched_at_ms', nowMillis, 'epoch', epoch)
       end
       redis.call('HINCRBY', stats, 'dispatched', 1)
       redis.call('INCR', inflight)

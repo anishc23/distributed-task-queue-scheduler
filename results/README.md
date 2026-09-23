@@ -44,12 +44,16 @@ results/
 
 | column | meaning |
 | --- | --- |
-| `arm` | `none`, `graceful`, `crash` or `single` |
+| `arm` | `none`, `graceful`, `crash`, `single` or `pause` |
 | `outage_ms` | dispatch gap bracketing the kill; **`-1` means censored**, not zero |
 | `recovered` | false when no dispatch ever followed the kill |
 | `max_gap_ms` | largest gap anywhere in the trial, the floor to read `outage_ms` against |
 | `leaders_before_kill` | sum of `tq_scheduler_is_leader` across replicas; anything but 1 invalidates the trial |
 | `duplicate_completions` | should be 0: a failover must not re-run finished work |
+| `epoch_inversions` | entries dispatched under a term older than one already written; **must be 0 in every arm** — it is the single-writer invariant, read back from the dispatch log |
+| `pause_ms` | `pause` arm only: how long the leader was actually stopped, measured rather than assumed |
+| `leaders_after_resume` | `pause` arm only: leadership sum once the superseded leader is running again; must be 1 |
+| `fenced_operations` | `pause` arm only: 1 when the resumed leader attempted a write and Redis refused it, 0 when its own lease renewal noticed first and it stood down before trying. Both are correct outcomes; the split says how often the lease alone would not have been enough |
 
 Treat `outage_ms = -1` as censored data. Averaging it as a number is the single
 easiest way to misreport this experiment, which is why the plotting script draws

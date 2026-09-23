@@ -11,7 +11,7 @@
 // signal, so nothing about the failure is simulated. Workers and the load
 // generator run in this process, against the same Redis.
 //
-// Four arms, each of which answers a different question:
+// Five arms, each of which answers a different question:
 //
 //	none      no kill. Measures the natural gap between dispatches under this
 //	          load, which is the floor every other arm has to be read against.
@@ -22,6 +22,13 @@
 //	          one lease TTL, and is the number that matters.
 //	single    SIGKILL the only scheduler. There is nobody to take over. This is
 //	          the control: it shows what the lease is actually buying.
+//	pause     SIGSTOP the leader for longer than its lease, then SIGCONT it.
+//	          This is the gray failure, and it is the only arm that exercises
+//	          the fence. A killed leader is gone and a lease alone would have
+//	          sufficed; a paused one comes back still believing it leads, and
+//	          nothing in its own process can tell it otherwise, because it was
+//	          not running to be told. It is the case Kleppmann's fencing-token
+//	          argument is about, and a clean SIGKILL cannot produce it.
 //
 // The outage is defined without any wiggle room: the gap between the last task
 // dispatched at or before the kill and the first task dispatched after it,
@@ -34,6 +41,14 @@
 // natural idle gap happened to precede the kill. That is deliberate: it is a
 // property of the stream rather than of this process's bookkeeping, and the
 // none arm measures exactly how large that inflation can be.
+//
+// What the pause arm asserts is stronger than "it did not crash". Every
+// execution-stream entry carries the epoch that dispatched it, so after the
+// resumed leader has had several dispatch ticks to misbehave, the stream is
+// replayed in order and the epochs must never go backwards. One entry out of
+// order would be a superseded leader that wrote after its successor: the exact
+// corruption the fence exists to prevent, visible in the artefact rather than
+// inferred from a counter in a process that has since exited.
 //
 // The kill time is jittered over one renewal interval. Without that, every
 // trial kills at the same phase of the renewal cycle and the measured outage
@@ -77,6 +92,11 @@ type arm struct {
 	name     string
 	replicas int
 	signal   syscall.Signal // zero means no kill
+	// resume marks the gray-failure arm: the victim is stopped rather than
+	// killed, and is continued again once its lease has expired and a
+	// successor has taken over. Everything downstream that says "the kill"
+	// means "the stop" for this arm.
+	resume bool
 }
 
 var arms = []arm{
@@ -84,6 +104,7 @@ var arms = []arm{
 	{name: "graceful", replicas: 2, signal: syscall.SIGTERM},
 	{name: "crash", replicas: 2, signal: syscall.SIGKILL},
 	{name: "single", replicas: 1, signal: syscall.SIGKILL},
+	{name: "pause", replicas: 2, signal: syscall.SIGSTOP, resume: true},
 }
 
 // trial is one row of the output.
@@ -126,6 +147,29 @@ type trial struct {
 	// sampled once the queue is running. Anything but 1 is a split brain or a
 	// leaderless queue.
 	LeadersBeforeKill float64
+
+	// The fields below are only meaningful in the pause arm.
+
+	// PauseMS is how long the victim was actually stopped, measured rather
+	// than assumed, because a stopped process is resumed by this harness and
+	// the scheduling of that wake-up is not instantaneous.
+	PauseMS float64
+	// LeadersAfterResume is the same leadership sum, sampled after the victim
+	// has been continued and given time to act. It must still be 1: the
+	// resumed process must have stood down, not joined a split brain.
+	LeadersAfterResume float64
+	// FencedOperations is tq_scheduler_fenced_operations_total on the resumed
+	// replica. One means it tried to write with a superseded epoch and Redis
+	// refused it: the fence did the work. Zero means its own lease renewal
+	// noticed first and it stood down before attempting anything, which is the
+	// same outcome reached one layer earlier. Both are correct; the split
+	// between them is the interesting number, because it says how often the
+	// lease alone would not have been enough.
+	FencedOperations float64
+	// EpochInversions counts execution-stream entries dispatched under an
+	// epoch lower than one already written. This is the invariant itself, read
+	// back from the data. It must be 0 in every arm.
+	EpochInversions int
 }
 
 func main() {
@@ -146,7 +190,9 @@ func main() {
 	killJitter := fs.Duration("kill-jitter", 0, "random extra delay before the kill, uniform in [0, jitter); defaults to the renewal interval")
 	seed := fs.Int64("seed", 1, "seed for the kill-time jitter, so a run is reproducible")
 	timeout := fs.Duration("timeout", 3*time.Minute, "per-trial time limit")
-	armList := fs.String("arms", "", "comma-separated subset of arms to run: none, graceful, crash, single (all when empty)")
+	pauseFor := fs.Duration("pause-for", 0, "how long the pause arm keeps the leader stopped; defaults to twice the lease ttl, which guarantees the lease expires and a successor takes over")
+	resumeSettle := fs.Duration("resume-settle", 3*time.Second, "how long the pause arm lets the resumed leader run before the trial is allowed to finish, so it has several dispatch ticks in which to misbehave")
+	armList := fs.String("arms", "", "comma-separated subset of arms to run: none, graceful, crash, single, pause (all when empty)")
 	binary := fs.String("scheduler-binary", "", "path to a prebuilt scheduler binary (built into a temp dir when empty)")
 	fs.Usage = func() {
 		fmt.Fprintf(os.Stderr, "failoverbench measures the dispatch outage caused by killing the scheduler.\n\nUsage:\n")
@@ -166,6 +212,16 @@ func main() {
 	// recovers the spread an operator would actually see.
 	if *killJitter <= 0 {
 		*killJitter = *leaseRenew
+	}
+	// The pause has to outlast the lease, or the victim renews on the way back
+	// and nothing was ever superseded: the arm would report a clean run while
+	// testing nothing at all.
+	if *pauseFor <= 0 {
+		*pauseFor = 2 * *leaseTTL
+	}
+	if *pauseFor <= *leaseTTL {
+		fmt.Fprintf(os.Stderr, "--pause-for (%s) must exceed --lease-ttl (%s), or the paused leader is never superseded\n", *pauseFor, *leaseTTL)
+		os.Exit(2)
 	}
 	rng := rand.New(rand.NewSource(*seed))
 
@@ -189,20 +245,22 @@ func main() {
 	}
 
 	cfg := &runConfig{
-		redisAddr:   *redisAddr,
-		tasks:       *tasks,
-		rate:        *rate,
-		execMS:      *execMS,
-		workers:     *workers,
-		concurrency: *concurrency,
-		policy:      *policy,
-		leaseTTL:    *leaseTTL,
-		leaseRenew:  *leaseRenew,
-		killAfter:   *killAfter,
-		killJitter:  *killJitter,
-		timeout:     *timeout,
-		binary:      bin,
-		log:         log,
+		redisAddr:    *redisAddr,
+		tasks:        *tasks,
+		rate:         *rate,
+		execMS:       *execMS,
+		workers:      *workers,
+		concurrency:  *concurrency,
+		policy:       *policy,
+		leaseTTL:     *leaseTTL,
+		leaseRenew:   *leaseRenew,
+		killAfter:    *killAfter,
+		killJitter:   *killJitter,
+		pauseFor:     *pauseFor,
+		resumeSettle: *resumeSettle,
+		timeout:      *timeout,
+		binary:       bin,
+		log:          log,
 	}
 
 	selected, err := selectArms(*armList)
@@ -239,20 +297,22 @@ func main() {
 }
 
 type runConfig struct {
-	redisAddr   string
-	tasks       int
-	rate        float64
-	execMS      int64
-	workers     int
-	concurrency int
-	policy      string
-	leaseTTL    time.Duration
-	leaseRenew  time.Duration
-	killAfter   time.Duration
-	killJitter  time.Duration
-	timeout     time.Duration
-	binary      string
-	log         *slog.Logger
+	redisAddr    string
+	tasks        int
+	rate         float64
+	execMS       int64
+	workers      int
+	concurrency  int
+	policy       string
+	leaseTTL     time.Duration
+	leaseRenew   time.Duration
+	killAfter    time.Duration
+	killJitter   time.Duration
+	pauseFor     time.Duration
+	resumeSettle time.Duration
+	timeout      time.Duration
+	binary       string
+	log          *slog.Logger
 }
 
 // buildScheduler compiles the scheduler command into a temporary directory.
@@ -382,6 +442,16 @@ func runTrial(ctx context.Context, cfg *runConfig, a arm, rep int, phase float64
 			return row, fmt.Errorf("signal leader: %w", err)
 		}
 		cfg.log.Info("killed the leader", "owner", victim.owner, "signal", a.signal.String())
+
+		if a.resume {
+			// A stopped process must be continued no matter how this trial
+			// ends. Left stopped it cannot be reaped, and the harness would
+			// hang in Wait behind a process that is not running to exit.
+			defer func() { _ = victim.cmd.Process.Signal(syscall.SIGCONT) }()
+			if err := pauseAndResume(ctx, cfg, rdb, br.Keys().Leader, &row, victim); err != nil {
+				return row, err
+			}
+		}
 	}
 
 	if err := <-submitDone; err != nil {
@@ -403,11 +473,22 @@ func runTrial(ctx context.Context, cfg *runConfig, a arm, rep int, phase float64
 	epoch, _ := rdb.Get(ctx, br.Keys().LeaderEpoch).Int()
 	row.Transitions = epoch
 
-	stamps, err := dispatchTimes(ctx, rdb, br.Keys().Exec)
+	entries, err := dispatchRecord(ctx, rdb, br.Keys().Exec)
 	if err != nil {
 		return row, err
 	}
+	stamps := dispatchStamps(entries)
 	row.MaxGapMS = maxGapMS(stamps)
+
+	// The invariant, read back from the dispatch log rather than asserted in a
+	// test: no superseded term may write after its successor has. This is
+	// checked in every arm, not only the one that pauses a leader, because an
+	// invariant that is only checked where it is expected to be interesting is
+	// not being checked at all.
+	row.EpochInversions = epochInversions(entries)
+	if row.EpochInversions != 0 {
+		return row, fmt.Errorf("%d execution-stream entries were dispatched under a superseded epoch; the single-writer invariant was violated", row.EpochInversions)
+	}
 	if a.signal == 0 {
 		row.OutageMS = 0
 		row.Recovered = true
@@ -437,6 +518,7 @@ func runTrial(ctx context.Context, cfg *runConfig, a arm, rep int, phase float64
 // proc is one scheduler process under test.
 type proc struct {
 	owner string
+	index int // which metrics port this replica listens on
 	cmd   *exec.Cmd
 }
 
@@ -465,7 +547,7 @@ func startSchedulers(ctx context.Context, cfg *runConfig, namespace string, n in
 			stopAll(out)
 			return nil, fmt.Errorf("start %s: %w", owner, err)
 		}
-		out = append(out, &proc{owner: owner, cmd: cmd})
+		out = append(out, &proc{owner: owner, index: i, cmd: cmd})
 	}
 	return out, nil
 }
@@ -548,13 +630,9 @@ func waitForLeader(ctx context.Context, rdb *redis.Client, key string, limit tim
 // leaderProcess resolves the lease holder to the process that holds it. The
 // holder value is "<owner>|<epoch>" and owner is the --consumer name we chose.
 func leaderProcess(ctx context.Context, rdb *redis.Client, key string, procs []*proc) (*proc, error) {
-	v, err := rdb.Get(ctx, key).Result()
+	owner, err := leaseOwner(ctx, rdb, key)
 	if err != nil {
-		return nil, fmt.Errorf("read the lease holder: %w", err)
-	}
-	owner := v
-	if i := strings.LastIndex(v, "|"); i >= 0 {
-		owner = v[:i]
+		return nil, err
 	}
 	for _, p := range procs {
 		if p.owner == owner {
@@ -562,6 +640,112 @@ func leaderProcess(ctx context.Context, rdb *redis.Client, key string, procs []*
 		}
 	}
 	return nil, fmt.Errorf("lease holder %q is not one of the processes under test", owner)
+}
+
+// pauseAndResume runs the gray failure: the leader is already stopped when this
+// is called, and it stays stopped for longer than its lease before being
+// continued again.
+//
+// The three checks in here are the point of the arm, and each one would be
+// worth nothing on its own:
+//
+//   - the victim really is stopped, read from the operating system rather than
+//     assumed from the fact that a signal was sent;
+//   - a different process holds the lease before the victim is resumed, so the
+//     resumed process really is superseded and not merely slow;
+//   - after resuming, exactly one process still claims leadership.
+//
+// Without the second check the arm could pass while testing nothing, which is
+// the failure mode of every fault-injection test that does not verify the fault
+// actually happened.
+func pauseAndResume(ctx context.Context, cfg *runConfig, rdb *redis.Client, leaseKey string, row *trial, victim *proc) error {
+	pausedAt := time.Now()
+
+	// Give the stop a moment to take effect, then confirm it did.
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(200 * time.Millisecond):
+	}
+	if state, err := processState(victim.cmd.Process.Pid); err == nil && !strings.HasPrefix(state, "T") {
+		return fmt.Errorf("victim %s is in state %q after SIGSTOP, want a stopped state", victim.owner, state)
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(cfg.pauseFor):
+	}
+
+	// The victim must have been superseded while it was stopped. If it still
+	// holds the lease the pause was too short, or nothing else was running,
+	// and resuming it would prove nothing.
+	successor, err := leaseOwner(ctx, rdb, leaseKey)
+	if err != nil {
+		return err
+	}
+	if successor == victim.owner {
+		return fmt.Errorf("%s still holds the lease after being stopped for %s; the pause did not outlast the lease", victim.owner, cfg.pauseFor)
+	}
+	if successor == "" {
+		return fmt.Errorf("nobody holds the lease after %s was stopped for %s", victim.owner, cfg.pauseFor)
+	}
+
+	if err := victim.cmd.Process.Signal(syscall.SIGCONT); err != nil {
+		return fmt.Errorf("resume %s: %w", victim.owner, err)
+	}
+	row.PauseMS = time.Since(pausedAt).Seconds() * 1000
+	cfg.log.Info("resumed the superseded leader",
+		"owner", victim.owner, "paused_ms", row.PauseMS, "successor", successor)
+
+	// Let it run. Its dispatch loop ticks several times in this window, and
+	// every one of those ticks is an attempt to write with an epoch that has
+	// been superseded.
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(cfg.resumeSettle):
+	}
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	url := "http://" + metricsAddr(victim.index) + "/metrics"
+	if v, err := scrapeGauge(ctx, client, url, "tq_scheduler_fenced_operations_total"); err == nil {
+		row.FencedOperations = v
+	}
+	if sum, err := leaderGauges(ctx, row.Replicas); err == nil {
+		row.LeadersAfterResume = sum
+		if sum != 1 {
+			return fmt.Errorf("%v replicas claim leadership after the superseded leader resumed, want exactly 1", sum)
+		}
+	}
+	return nil
+}
+
+// processState reads the operating system's view of a process, so that "it was
+// stopped" is an observation rather than an inference from a signal call that
+// returned nil. The first letter of the state is what matters: T is stopped.
+func processState(pid int) (string, error) {
+	out, err := exec.Command("ps", "-o", "state=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// leaseOwner reads the current lease holder's name, or "" when the lease is
+// free. The stored value is "<owner>|<epoch>".
+func leaseOwner(ctx context.Context, rdb *redis.Client, key string) (string, error) {
+	v, err := rdb.Get(ctx, key).Result()
+	if errors.Is(err, redis.Nil) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read the lease holder: %w", err)
+	}
+	if i := strings.LastIndex(v, "|"); i >= 0 {
+		return v[:i], nil
+	}
+	return v, nil
 }
 
 // waitForDrain waits until every task reached a terminal state, and reports
@@ -593,12 +777,21 @@ func waitForDrain(ctx context.Context, br *broker.Broker, want int) bool {
 	return false
 }
 
-// dispatchTimes reads the dispatch timestamp the dispatch script stamps on
-// every execution-stream entry. This is the scheduler's own record of when it
-// acted, which is what makes the outage a measurement rather than an inference
-// from wall-clock bookkeeping in this process.
-func dispatchTimes(ctx context.Context, rdb *redis.Client, stream string) ([]time.Time, error) {
-	var out []time.Time
+// dispatchEntry is one execution-stream entry as the analysis sees it: when the
+// scheduler dispatched it, and which leadership term did so.
+type dispatchEntry struct {
+	At    time.Time
+	Epoch int64
+}
+
+// dispatchRecord reads the execution stream in stream order, which is dispatch
+// order, since stream IDs are assigned by Redis at XADD and only increase.
+//
+// Both fields come from the dispatch script rather than from bookkeeping in
+// this process: the timestamp is what makes the outage a measurement, and the
+// epoch is what makes the single-writer invariant checkable after the fact.
+func dispatchRecord(ctx context.Context, rdb *redis.Client, stream string) ([]dispatchEntry, error) {
+	var out []dispatchEntry
 	start := "-"
 	for {
 		msgs, err := rdb.XRangeN(ctx, stream, start, "+", 5000).Result()
@@ -617,7 +810,11 @@ func dispatchTimes(ctx context.Context, rdb *redis.Client, stream string) ([]tim
 			if err != nil {
 				continue
 			}
-			out = append(out, time.UnixMilli(ms))
+			e := dispatchEntry{At: time.UnixMilli(ms)}
+			if s, ok := m.Values["epoch"].(string); ok {
+				e.Epoch, _ = strconv.ParseInt(s, 10, 64)
+			}
+			out = append(out, e)
 		}
 		last := msgs[len(msgs)-1].ID
 		if len(msgs) < 5000 {
@@ -625,8 +822,45 @@ func dispatchTimes(ctx context.Context, rdb *redis.Client, stream string) ([]tim
 		}
 		start = "(" + last
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Before(out[j]) })
 	return out, nil
+}
+
+// dispatchStamps pulls the timestamps out in ascending order. They are sorted
+// because a gap analysis needs them ordered by time, whereas the epoch check
+// below needs them in the order they were written.
+func dispatchStamps(entries []dispatchEntry) []time.Time {
+	out := make([]time.Time, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, e.At)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Before(out[j]) })
+	return out
+}
+
+// epochInversions counts entries dispatched under a term older than one that
+// had already written. This is the single-writer invariant stated as something
+// a reader can check: the fence guarantees that once epoch N has written,
+// nothing below N ever writes again, so replaying the stream in order must
+// produce epochs that never decrease.
+//
+// Entries with no epoch are skipped rather than counted as zero. Those are
+// worker-initiated retries, which are not dispatched by a leader and so are not
+// governed by the fence; counting them would manufacture an inversion at every
+// retry and make the check meaningless.
+func epochInversions(entries []dispatchEntry) int {
+	var high int64
+	inversions := 0
+	for _, e := range entries {
+		if e.Epoch <= 0 {
+			continue
+		}
+		if e.Epoch < high {
+			inversions++
+			continue
+		}
+		high = e.Epoch
+	}
+	return inversions
 }
 
 func maxGapMS(stamps []time.Time) float64 {
@@ -703,6 +937,7 @@ func writeCSV(path string, rows []trial) error {
 		"dispatched", "completed", "duplicate_completions", "dead_lettered",
 		"outage_ms", "max_gap_ms", "recovered", "leader_epochs", "leaders_before_kill",
 		"wall_seconds", "suspect",
+		"pause_ms", "leaders_after_resume", "fenced_operations", "epoch_inversions",
 	}); err != nil {
 		return err
 	}
@@ -727,6 +962,10 @@ func writeCSV(path string, rows []trial) error {
 			strconv.FormatFloat(r.LeadersBeforeKill, 'f', 0, 64),
 			strconv.FormatFloat(r.WallSeconds, 'f', 1, 64),
 			strconv.FormatBool(r.Suspect),
+			strconv.FormatFloat(r.PauseMS, 'f', 1, 64),
+			strconv.FormatFloat(r.LeadersAfterResume, 'f', 0, 64),
+			strconv.FormatFloat(r.FencedOperations, 'f', 0, 64),
+			strconv.Itoa(r.EpochInversions),
 		}); err != nil {
 			return err
 		}
@@ -767,12 +1006,17 @@ func summarise(w io.Writer, rows []trial) {
 		var outages []float64
 		var gaps []float64
 		recovered, total, suspect := 0, 0, 0
+		fencedTrials, inversions := 0, 0
 		var lostWork int64
 		for _, r := range rows {
 			if r.Arm != a.name {
 				continue
 			}
 			total++
+			inversions += r.EpochInversions
+			if r.FencedOperations > 0 {
+				fencedTrials++
+			}
 			if r.Suspect {
 				suspect++
 				continue
@@ -797,6 +1041,15 @@ func summarise(w io.Writer, rows []trial) {
 		if suspect != 0 {
 			fmt.Fprintf(w, "%-10s %s\n", "", fmt.Sprintf("EXCLUDED %d suspect trial(s): outage far beyond the lease ttl", suspect))
 		}
+		if a.resume {
+			// Both outcomes are correct, and the split between them is the
+			// result: the remainder are trials in which the resumed leader
+			// stood down on its own before it managed to attempt a write.
+			fmt.Fprintf(w, "%-10s %s\n", "",
+				fmt.Sprintf("the resumed leader was refused by the fence in %d/%d trials", fencedTrials, total))
+		}
+		fmt.Fprintf(w, "%-10s %s\n", "",
+			fmt.Sprintf("dispatches under a superseded epoch: %d", inversions))
 	}
 }
 

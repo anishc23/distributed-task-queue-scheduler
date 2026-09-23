@@ -164,6 +164,23 @@ at all. That is deliberate: a single-scheduler deployment, the benchmark harness
 and every test written before the lease existed take exactly the path they
 always did.
 
+### The dispatch log records which term wrote each entry
+
+Every execution-stream entry is stamped with the epoch that dispatched it. The
+queue does not need that field to run. It is there so the fence's guarantee is
+checkable from the data rather than only from the code: replay the stream in
+order, and the epochs must never go backwards.
+
+This is what makes the claim falsifiable. Removing the fence and running the
+gray-failure test makes the violation appear in the log immediately — 172 of 400
+entries dispatched under a dead term in the recorded run — and the same check
+runs over every failover trial, where it has always been zero.
+
+Retries carry no epoch, because a worker re-queues them rather than a leader
+dispatching them. A reader treats a missing epoch as "not attributable to a
+term" and skips it, rather than reading it as term zero and manufacturing an
+inversion at every retry.
+
 ### What a failover costs
 
 Measured, not asserted — see `cmd/failoverbench` and section 4.7 of the report:
@@ -173,6 +190,7 @@ Measured, not asserted — see `cmd/failoverbench` and section 4.7 of the report
 | Clean shutdown or rollout | About one dispatch interval. The lease is released, so nothing waits. |
 | Hard crash | About one lease TTL. Redis must expire the key before a standby can safely take over. |
 | Hard crash, one replica | Unbounded. Nothing takes over. |
+| Leader frozen past its lease, then resumed | One lease TTL, and the resumed leader is refused at the resource. This is the case the fence exists for; see the `pause` arm. |
 
 Lowering the TTL shortens failover and raises the chance that an ordinary
 latency spike is mistaken for a death. The default of 5s with a 1.5s renewal

@@ -290,7 +290,7 @@ merge: ## Combine runs into one analysable directory: make merge OUT=final RUNS=
 	$(VENV_PY) scripts/merge_runs.py --results-dir=$(RESULTS_DIR) --out=$(or $(OUT),merged) $(RUNS)
 
 .PHONY: failover
-failover: ## Measure the dispatch outage caused by killing the scheduler: make failover FAILOVER_REPETITIONS=15
+failover: ## Measure the dispatch outage from killing, and from freezing, the scheduler: make failover FAILOVER_REPETITIONS=15
 	@$(MAKE) --no-print-directory redis-check
 	@# This is a timing measurement on an otherwise idle machine, and it runs
 	@# unattended for tens of minutes. A laptop that idle-sleeps mid-run

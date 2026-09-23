@@ -238,3 +238,75 @@ func TestAdmissionIsRefusedAfterANewerEpochActs(t *testing.T) {
 		t.Error("the fenced task was recorded as known, so no later leader would ever admit it")
 	}
 }
+
+// Every dispatched entry records the term that dispatched it. The queue does
+// not need this field to run; the analysis does. It is what turns "no
+// superseded leader wrote after its successor" from a claim about the code into
+// a property of the artefact, checkable by replaying the stream and confirming
+// the epochs never go backwards.
+func TestDispatchStampsTheEpochOnEveryEntry(t *testing.T) {
+	br, rdb := newBroker(t)
+	ctx := testContext(t)
+	if err := br.EnsureStreams(ctx); err != nil {
+		t.Fatalf("ensure streams: %v", err)
+	}
+
+	pol := fifo.New()
+	for _, id := range []string{"e-1", "e-2"} {
+		tk := task(id, 0)
+		if _, err := br.Admit(ctx, tk, pol.Rank(tk), lease.NoEpoch); err != nil {
+			t.Fatalf("admit %s: %v", id, err)
+		}
+	}
+	if _, err := br.Dispatch(ctx, 2, 0, time.Now(), 11); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	msgs, err := rdb.XRange(ctx, br.Keys().Exec, "-", "+").Result()
+	if err != nil {
+		t.Fatalf("read the execution stream: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("execution stream holds %d entries, want 2", len(msgs))
+	}
+	for _, m := range msgs {
+		got, ok := m.Values["epoch"].(string)
+		if !ok {
+			t.Fatalf("entry %s carries no epoch field; the dispatch log cannot be audited without it", m.ID)
+		}
+		if got != "11" {
+			t.Errorf("entry %s was stamped epoch %s, want 11", m.ID, got)
+		}
+	}
+}
+
+// With election off there is no term to record, and the stamp must not invent
+// one. A zero here is what tells a reader that the entry is outside the fence's
+// scope rather than dispatched by term zero.
+func TestDispatchStampsNoEpochWhenElectionIsOff(t *testing.T) {
+	br, rdb := newBroker(t)
+	ctx := testContext(t)
+	if err := br.EnsureStreams(ctx); err != nil {
+		t.Fatalf("ensure streams: %v", err)
+	}
+
+	pol := fifo.New()
+	tk := task("e-off", 0)
+	if _, err := br.Admit(ctx, tk, pol.Rank(tk), lease.NoEpoch); err != nil {
+		t.Fatalf("admit: %v", err)
+	}
+	if _, err := br.Dispatch(ctx, 1, 0, time.Now(), lease.NoEpoch); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	msgs, err := rdb.XRange(ctx, br.Keys().Exec, "-", "+").Result()
+	if err != nil {
+		t.Fatalf("read the execution stream: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("execution stream holds %d entries, want 1", len(msgs))
+	}
+	if got := msgs[0].Values["epoch"]; got != "0" {
+		t.Errorf("entry was stamped epoch %v, want 0 when leader election is off", got)
+	}
+}

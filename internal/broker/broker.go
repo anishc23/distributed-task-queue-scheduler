@@ -352,6 +352,10 @@ type ExecMessage struct {
 	ID           string
 	Task         domain.Task
 	DispatchedAt time.Time
+	// Epoch is the leadership term that dispatched this entry, or NoEpoch for
+	// an entry a worker re-queued as a retry and for any entry written while
+	// leader election was switched off.
+	Epoch int64
 }
 
 // ReadExec reads new execution entries for a worker consumer.
@@ -396,6 +400,11 @@ func parseExecMessage(msg redis.XMessage) (ExecMessage, error) {
 	if s, ok := msg.Values["dispatched_at_ms"].(string); ok {
 		if ms, err := strconv.ParseInt(s, 10, 64); err == nil {
 			m.DispatchedAt = time.UnixMilli(ms)
+		}
+	}
+	if s, ok := msg.Values["epoch"].(string); ok {
+		if e, err := strconv.ParseInt(s, 10, 64); err == nil {
+			m.Epoch = e
 		}
 	}
 	return m, nil
