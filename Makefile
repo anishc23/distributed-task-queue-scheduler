@@ -28,6 +28,8 @@ FAILOVER_REPETITIONS ?= 15
 # Store-failure trials build and tear down a whole Sentinel cluster each time,
 # so they are slower per trial than the scheduler failover ones.
 STOREFAULT_REPETITIONS ?= 10
+# The baseline sweeps six task durations, so each repetition is twelve runs.
+BASELINE_REPETITIONS ?= 5
 RUN             ?=
 RESULTS_DIR     ?= results
 RUN_CONFIG      ?= experiments/quick.yaml
@@ -309,6 +311,23 @@ failover: ## Measure the dispatch outage from killing, and from freezing, the sc
 failover-plots: ## Chart the failover results: make failover-plots RUN=failover
 	@test -x $(VENV_PY) || { echo "run 'make python-deps' first"; exit 1; }
 	$(VENV_PY) scripts/plot_failover.py --results-dir=$(RESULTS_DIR) --run=$(or $(RUN),failover)
+
+.PHONY: baseline
+baseline: ## Compare this queue against Asynq on identical work: make baseline BASELINE_REPETITIONS=5
+	@$(MAKE) --no-print-directory redis-check
+	@# A separate Go module, so Asynq never enters the shipped library's
+	@# dependency graph. Run from its own directory for the same reason.
+	@# Both systems are driven one after the other against the same Redis,
+	@# never concurrently, so neither is measured while the other competes.
+	cd bench/asynq && $(shell command -v caffeinate >/dev/null && echo caffeinate -dims) \
+		$(GO) run . --redis-addr=$(REDIS_ADDR) \
+		--repetitions=$(BASELINE_REPETITIONS) \
+		--run-id=$(or $(RUN),baseline) --results-dir=../../$(RESULTS_DIR)
+
+.PHONY: baseline-plots
+baseline-plots: ## Chart the Asynq comparison: make baseline-plots RUN=baseline
+	@test -x $(VENV_PY) || { echo "run 'make python-deps' first"; exit 1; }
+	$(VENV_PY) scripts/plot_baseline.py --results-dir=$(RESULTS_DIR) --run=$(or $(RUN),baseline)
 
 .PHONY: storefault
 storefault: ## Break Redis underneath a running queue and measure the fence: make storefault STOREFAULT_REPETITIONS=10

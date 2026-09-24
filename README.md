@@ -1687,6 +1687,56 @@ the fault is still in effect at the moment the master dies.
 
 ![What a Redis failover does to the fence](docs/images/storefault.png)
 
+### Against an outside implementation
+
+Every other throughput number here is internal, which answers which choice is
+better *in this codebase* and not whether the codebase is any good. Asynq is the
+comparison: Go, Redis-backed, and its workers pull straight from Redis lists
+with no central scheduler — so the difference between the two is close to the
+one design decision this project is about.
+
+```bash
+make baseline BASELINE_REPETITIONS=5
+make baseline-plots RUN=baseline
+```
+
+Same Redis, one system after the other and never concurrently; all tasks
+pre-enqueued so the measurement is drain time; identical sleep as work;
+identical concurrency; order alternated across repetitions; latency computed by
+the harness from the instant workers are released, on both sides.
+
+| task duration | this queue | Asynq | difference | this queue | Asynq |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 ms | 8,075/s | **12,478/s** | **−35.3%** | — | — |
+| 1 ms | 8,265/s | **11,896/s** | **−30.5%** | 25.8% of ceiling | 37.2% |
+| 2 ms | 8,611/s | **12,181/s** | **−29.3%** | 53.8% | 76.1% |
+| 5 ms | **5,810/s** | 5,522/s | +5.2% | 90.8% | 86.3% |
+| 10 ms | **2,983/s** | 2,805/s | +6.3% | 93.2% | 87.7% |
+| 20 ms | **1,492/s** | 1,465/s | +1.8% | 93.3% | 91.6% |
+
+**Below about three milliseconds per task, this architecture costs ~30% of
+throughput.** That is a much larger number than the 1.5% in
+[what the central scheduler costs](#what-does-the-central-scheduler-actually-cost), and both are honest:
+that one compares against the same codebase with the scheduler switched off,
+which still routes everything through the same Redis structures. Asynq is a
+different architecture, not a disabled feature.
+
+**Above about five milliseconds the gap closes and slightly reverses**, with
+both systems at 86–93% of the ceiling that slot occupancy imposes — at which
+point the benchmark is measuring `sleep`, not queue machinery.
+
+The crossover is the practical boundary of the design. A workload of
+sub-millisecond tasks should not route every task through one process, and this
+project's own results agree: policy only matters in a narrow band around
+capacity, which is not where trivial tasks live.
+
+Asynq does things this project does not (scheduled and recurring tasks, task
+groups, a web UI, production maturity); this project does things Asynq does not
+(a pluggable global policy with deadline-aware and fair-queuing disciplines).
+This is one axis, measured carefully.
+
+![This queue against Asynq](docs/images/baseline.png)
+
 **Failover time tracks the lease, so it is a tuning decision.** The crash arm
 repeated at three TTLs, renewal held at `TTL / 3.3`, standby poll at 1 s:
 
@@ -1841,6 +1891,8 @@ the run has not been plotted.
 │   ├── schedbench/     the scheduler's own dispatch ceiling
 │   ├── failoverbench/  what a scheduler crash costs
 │   ├── storefaultbench/ what a Redis failover does to the fence
+├── bench/asynq/        external baseline (its own Go module, so Asynq is
+│                       never a dependency of the shipped library)
 │   └── tqctl/          live state and dead-letter inspection
 ├── internal/
 │   ├── broker/         all Redis access, including the atomic Lua scripts
@@ -1859,7 +1911,7 @@ the run has not been plotted.
 ├── configs/            runnable configurations, fully commented
 ├── experiments/        quick, full and failure-injection profiles
 ├── scripts/            plot_results.py, plot_load_sweep.py, plot_failover.py,
-│                       plot_storefault.py,
+│                       plot_storefault.py, plot_baseline.py,
 │                       merge_runs.py, kind-up.sh, kind-down.sh
 ├── deploy/
 │   ├── docker/         multi-stage Dockerfile, Prometheus config

@@ -14,7 +14,7 @@ priority, earliest deadline first (EDF) and weighted fair queuing (WFQ) — were
 compared across four synthetic workloads, seven levels of offered load, and two
 models of task execution.
 
-The study comprises **1,403 experiments over 4.99 million tasks**. Four results
+The study comprises **1,463 experiments over 5.47 million tasks**. Four results
 are reported. First, scheduling policy is decisive only in a narrow band around
 service capacity: the spread between the best and worst policy's 99th-percentile
 latency is 0.1% at half capacity, peaks at 93% at capacity, and falls to 1.1% at
@@ -36,7 +36,9 @@ refused the returning leader in 11 of 15 trials. Pushed one level further, the
 fence turns out to inherit the durability of the store beneath it: a Redis
 failover to a lagging replica issued one fencing token to two leaders in 10
 trials out of 10, and the fix is a store setting rather than a scheduler
-change.
+change. Measured against Asynq, an external queue with no central scheduler,
+the architecture costs about 30% of throughput on tasks shorter than three
+milliseconds and nothing measurable on tasks of five milliseconds or more.
 
 Three quantitative claims made earlier in this work were subsequently found to
 be wrong and are corrected here. That process is reported rather than concealed,
@@ -793,6 +795,85 @@ the store this system ships with does not provide enough of it.
 ![What a Redis failover does to the fence](images/storefault.png)
 
 
+### 4.10 An outside reference point
+
+Every throughput figure so far is internal: this scheduler against that
+scheduler, this policy against that policy, all inside one codebase on one
+machine. That answers which choice is better *here* and says nothing about
+whether here is any good. Section 4.6 measured the cost of centralising the
+scheduling decision against a control that simply switched the scheduler off,
+which is a control written by the same author as the thing it controls for.
+
+**Method.** Asynq is the comparison, chosen for a structural reason rather than
+for popularity: it is Go, it is backed by Redis, and its workers pull tasks
+directly from Redis lists with no central scheduler at all. The difference
+between the two systems is therefore close to the single design decision this
+project exists to examine. It runs as a separate Go module (`bench/asynq`) so
+that the dependency never enters the shipped library's graph.
+
+Fairness is the only real difficulty in a benchmark like this, so the controls
+are stated rather than assumed: the same Redis server, one system after the
+other and never concurrently; the same task count, entirely pre-enqueued before
+any worker starts, so the measurement is drain time and no producer rate sits in
+the way; the same sleep as simulated work; the same total concurrency; and the
+order of the two systems alternated across repetitions so neither is
+systematically first. Latency is computed by the harness from the instant the
+workers are released, identically on both sides, rather than read from either
+system's own instrumentation.
+
+The comparison uses this project's FIFO policy with leader election off, which
+is the configuration closest to what Asynq provides. The cost of the fence and
+the lease is measured separately in Sections 4.6 and 4.7.
+
+**Results** (5 repetitions per point, 8,000 tasks each, 32 slots):
+
+| task duration | this queue | Asynq | difference | slot ceiling | this queue | Asynq |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 ms | 8,075/s | **12,478/s** | **−35.3%** | — | — | — |
+| 1 ms | 8,265/s | **11,896/s** | **−30.5%** | 32,000/s | 25.8% | 37.2% |
+| 2 ms | 8,611/s | **12,181/s** | **−29.3%** | 16,000/s | 53.8% | 76.1% |
+| 5 ms | **5,810/s** | 5,522/s | +5.2% | 6,400/s | 90.8% | 86.3% |
+| 10 ms | **2,983/s** | 2,805/s | +6.3% | 3,200/s | 93.2% | 87.7% |
+| 20 ms | **1,492/s** | 1,465/s | +1.8% | 1,600/s | 93.3% | 91.6% |
+
+**Below about three milliseconds per task, centralising the decision costs
+roughly 30% of throughput.** That is the price of this architecture, measured
+against somebody else's production implementation of the alternative rather than
+against an internal control, and it is a larger number than Section 4.6's 1.5%.
+The two are not in conflict: 4.6 compares against the same codebase with the
+scheduler removed, which still routes every task through the same Redis
+structures, while Asynq's workers pull from a list with no dispatch step at all.
+The comparison here is against a different architecture, not a disabled feature,
+and the gap is correspondingly wider.
+
+**Above about five milliseconds the difference disappears, and slightly
+reverses.** Both systems then sit within a few per cent of each other and at
+86–93% of the ceiling that slot occupancy imposes, which is another way of
+saying the benchmark has stopped measuring queue machinery and started measuring
+`sleep`. This queue is marginally ahead there, and consistently closer to the
+ceiling, which is the sort of small difference this report has elsewhere
+declined to interpret — a plausible mechanism is that batched dispatch keeps
+slots filled more evenly than independent per-worker polling, but that has not
+been tested and is offered as a hypothesis, not a finding.
+
+**What this means for the design.** The crossover sits between 2 ms and 5 ms on
+this machine. A workload of tasks shorter than that should not use a central
+scheduler, and this project's own results say so: Section 4.1 found that
+scheduling policy is decisive only in a narrow band around capacity, and a
+sub-millisecond task queue is not where a global policy earns its cost. Where
+tasks take milliseconds or longer — which covers most of what task queues are
+actually used for — centralisation is free in throughput terms, and everything
+Sections 4.2 to 4.5 measured is what it buys.
+
+**What is not claimed.** Asynq does things this project does not: scheduled and
+recurring tasks, task groups, a web UI, and years of production use. This
+project does things Asynq does not: a pluggable global policy with
+deadline-aware and fair-queuing disciplines. This is one axis, measured
+carefully, on one machine.
+
+![This queue against Asynq](images/baseline.png)
+
+
 ## 5. Threats to validity
 
 ### 5.1 Corrections made during this study
@@ -916,8 +997,10 @@ work and improved.
    intact, and Section 4.9 cuts replication rather than the scheduler's own
    path to the master. The proxy used in 4.9 would support it; the experiment
    is not yet written.
-5. **No external baseline.** No comparison against Celery, Sidekiq or Temporal,
-   so absolute throughput figures have no external reference point.
+5. **One external baseline, on one axis.** Section 4.10 compares against Asynq,
+   which shares this project's language and store and differs mainly in having
+   no central scheduler. There is no comparison against Celery, Sidekiq or
+   Temporal, and no comparison of features rather than throughput.
 6. **Timing is not reproducible**, only the workload. Cross-machine comparison is
    not supported.
 7. **The real-work comparison is narrow**: three of four workloads, a single
@@ -971,6 +1054,15 @@ un-issued. What works is configuring the master to refuse writes it cannot
 replicate, which converts silent loss into an error the producer can see. The
 correctness of a fencing scheme is a property of the token *and* its storage,
 and only one of those is in the scheduler's source code.
+
+**Centralisation is free for real tasks and expensive for trivial ones.**
+Against Asynq — same language, same store, no central scheduler — this queue is
+about 30% slower when tasks take under three milliseconds, and within a few per
+cent once they take five or more, where both sit at 86–93% of the ceiling slot
+occupancy imposes. The crossover is the practical boundary of this design: a
+sub-millisecond workload should not route every task through one process, and
+that is exactly the regime where Section 4.1 found policy makes no difference
+anyway.
 
 **Metric choice can hide the effect entirely.** Jain's index over completed
 service reports 0.246 for every policy under tenant skew, because it is
@@ -1033,9 +1125,14 @@ go run ./cmd/failoverbench --arms crash --repetitions 12 --seed 3 \
 # redis-sentinel on PATH and touches no other Redis.
 make storefault STOREFAULT_REPETITIONS=10 RUN=storefault
 
+# Section 4.10: the external baseline. A separate Go module, so Asynq never
+# enters the shipped library's dependency graph.
+make baseline BASELINE_REPETITIONS=5 RUN=baseline
+
 make plots RUN=main && make sweep-plots RUN=sweep-loads
 make failover-plots RUN=failover
 make storefault-plots RUN=storefault
+make baseline-plots RUN=baseline
 ```
 
 The failover runs start real scheduler processes and kill them, so they need a
@@ -1058,7 +1155,8 @@ Source, configurations and full result schemas:
 | Scheduler failover, five arms | 75 | 300,000 |
 | Failover, lease-TTL sensitivity | 24 | 96,000 |
 | Store failure under Sentinel, four arms | 40 | 120,000 |
-| **Total** | **1,403** | **4,996,000** |
+| External baseline against Asynq | 60 | 480,000 |
+| **Total** | **1,463** | **5,476,000** |
 
 Failover rows count tasks *submitted*: the single-replica control arm leaves a
 median of 2,613 per trial permanently unscheduled, which is the result rather

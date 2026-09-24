@@ -55,6 +55,29 @@ jobs:
           go mod tidy
           git diff --exit-code -- go.mod go.sum
 
+      # The baseline benchmark is a separate module so that Asynq is never a
+      # dependency of the shipped library. That isolation also means the root
+      # build never compiles it, so it would rot silently without this step.
+      - name: External baseline module builds
+        working-directory: bench/asynq
+        run: |
+          go build ./...
+          go vet ./...
+          go run honnef.co/go/tools/cmd/staticcheck@2025.1.1 ./...
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      # The isolation is the point, so assert it rather than trusting it: the
+      # root module must not acquire Asynq as a dependency.
+      - name: The shipped module does not depend on Asynq
+        run: |
+          if go list -m all | grep -q 'hibiken/asynq'; then
+            echo "the root module depends on Asynq; the benchmark's dependency has leaked"
+            go list -m all | grep 'hibiken/asynq'
+            exit 1
+          fi
+          echo "root module is free of the benchmark's dependencies"
+
   unit:
     name: Unit tests
     runs-on: ubuntu-latest

@@ -540,6 +540,73 @@ own memory, outside the store — because the fault under test destroys Redis
 state, and asking the survivor to describe the part it slept through is not a
 measurement.
 
+## External baseline
+
+`bench/asynq` compares this queue against [Asynq](https://github.com/hibiken/asynq)
+on identical work.
+
+```bash
+make baseline BASELINE_REPETITIONS=5
+make baseline-plots RUN=baseline
+```
+
+It is a **separate Go module** with a one-way `replace` directive pointing at
+the repository root. The dependency goes one way only: the benchmark uses the
+queue, the queue never uses the benchmark, and `go build ./...` at the root
+never pulls Asynq in.
+
+### Why Asynq
+
+Not because it is popular. Asynq is written in Go, is backed by Redis, and its
+workers pull tasks directly from Redis lists with no central scheduler — so the
+difference between the two systems is close to the single design decision this
+project exists to examine. Section 4.6 measured that decision against an
+internal control that switched the scheduler off, which is a control written by
+the same author as the thing it controls for. This is an outside one.
+
+### Fairness controls
+
+A comparison like this is easy to rig, so the controls are explicit:
+
+- the same Redis server, one system after the other and **never concurrently**;
+- the same task count, entirely pre-enqueued before any worker starts, so the
+  measurement is drain time and no producer rate sits in the way;
+- the same simulated work: both handlers sleep for the same duration;
+- the same total concurrency, expressed the way each system expresses it;
+- the order of the two systems **alternated across repetitions**, so neither is
+  systematically first into a warm Redis;
+- latency computed by the harness from the instant the workers are released,
+  identically on both sides, rather than read from either system's own
+  instrumentation. An earlier version measured from each task's own enqueue
+  time, which would have charged each system for its own harness loop.
+
+This project runs with FIFO and leader election off, which is the configuration
+closest to what Asynq provides. The cost of the fence and the lease is measured
+separately in report sections 4.6 and 4.7.
+
+### Why the sweep, rather than one number
+
+Scheduling overhead is a fixed cost per task, so it is only visible while the
+work is cheap enough not to hide it. A single headline figure would be true only
+at whatever duration happened to be chosen, and could be made to favour either
+system by choosing it. The harness sweeps task durations and reports the
+crossover.
+
+### What this experiment found
+
+- **Below about 3 ms per task, this queue is ~30% slower.** That is the cost of
+  routing every task through one scheduler, measured against a production
+  implementation of the alternative.
+- **Above about 5 ms the difference vanishes and slightly reverses** (+1.8% to
+  +6.3%), with both systems at 86–93% of the ceiling that slot occupancy
+  imposes. At that point the benchmark is measuring `sleep`.
+- The crossover, between 2 ms and 5 ms on this machine, is the practical
+  boundary of the design.
+
+The small advantage above 5 ms is not interpreted. A plausible mechanism is that
+batched dispatch keeps slots filled more evenly than independent per-worker
+polling, but that was not tested.
+
 ## Known limitations
 
 1. **Simulated execution.** Workers sleep rather than compute by default.
