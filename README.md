@@ -1630,10 +1630,62 @@ and was confirmed to fail with the fence deleted: **172 of 400 tasks dispatched
 under a dead term**.
 
 What this does not cover: a stopped process resumes with its Redis connection
-intact, so a network partition — which breaks the path to the store as well —
-remains future work rather than something approximated here.
+intact. Breaking the store itself is the next section.
 
 ![What stopped the superseded leader](docs/images/failover_gray.png)
+
+### What the fence rests on
+
+Everything above assumes Redis does not lose acknowledged writes. The fencing
+token is a counter held in Redis, so that assumption is load-bearing — and it is
+false in the default Sentinel configuration.
+
+`cmd/storefaultbench` builds a real Sentinel cluster (one master, two replicas,
+three sentinels) out of local processes, runs the queue against it through
+Sentinel discovery, cuts replication, and kills the master.
+
+```bash
+make storefault STOREFAULT_REPETITIONS=10
+make storefault-plots RUN=storefault
+```
+
+| arm | one token, two leaders | acknowledged tasks destroyed | submissions accepted | completed |
+| --- | ---: | ---: | ---: | ---: |
+| replicas caught up *(control)* | **0 / 10** | 0 | 20,011 | 20,011 |
+| replication cut, no mitigation | **10 / 10** | **10,010** | 20,020 | 10,010 |
+| + epoch waits for a replica | **10 / 10** | 10,009 | 20,019 | 10,010 |
+| + master refuses unreplicated writes | **0 / 10** | 0 | 10,010 | 10,010 |
+
+```
+a fencing token was issued twice to different leaders
+epoch=2  first_holder=sched-2  second_holder=sched-1
+```
+
+**A token that identifies two terms excludes neither.** The epoch counter is
+advanced by an `INCR` on the master; the master dies before that reaches a
+replica; the promoted node hands the same number out again.
+
+**The obvious fix does not work.** Having the leader wait for its epoch to
+replicate before acting on it failed 10/10 — exactly as often as no mitigation.
+The counter is incremented *before* the wait, so a master that dies in between
+has already lost it. Detecting a lost write is not preventing one.
+
+**What works is refusing the write.** `min-replicas-to-write` on the master
+makes the `INCR` itself fail while no replica can take it, so no token is issued
+that can be lost: 0/10 violations, 0 tasks destroyed.
+
+**The cost is honesty, not throughput.** The guarded arm accepted half as many
+submissions — but the unguarded arms *completed* the same 10,010. They simply
+also told the producer they had accepted another 10,010, then destroyed them.
+
+Three things had to be fixed before this experiment measured anything, and each
+was found by getting it wrong: `SIGSTOP` does not stop replication (the kernel
+buffers it and the replica catches up on resume), a graceful `SHUTDOWN` makes
+Redis wait for replicas so only `SIGKILL` loses data, and Sentinel silently
+repairs the partition on its own refresh period — so the harness now verifies
+the fault is still in effect at the moment the master dies.
+
+![What a Redis failover does to the fence](docs/images/storefault.png)
 
 **Failover time tracks the lease, so it is a tuning decision.** The crash arm
 repeated at three TTLs, renewal held at `TTL / 3.3`, standby poll at 1 s:
@@ -1788,6 +1840,7 @@ the run has not been plotted.
 │   ├── benchmark/      the experiment matrix
 │   ├── schedbench/     the scheduler's own dispatch ceiling
 │   ├── failoverbench/  what a scheduler crash costs
+│   ├── storefaultbench/ what a Redis failover does to the fence
 │   └── tqctl/          live state and dead-letter inspection
 ├── internal/
 │   ├── broker/         all Redis access, including the atomic Lua scripts
@@ -1806,6 +1859,7 @@ the run has not been plotted.
 ├── configs/            runnable configurations, fully commented
 ├── experiments/        quick, full and failure-injection profiles
 ├── scripts/            plot_results.py, plot_load_sweep.py, plot_failover.py,
+│                       plot_storefault.py,
 │                       merge_runs.py, kind-up.sh, kind-down.sh
 ├── deploy/
 │   ├── docker/         multi-stage Dockerfile, Prometheus config
@@ -1834,6 +1888,8 @@ the run has not been plotted.
 | Fencing | A superseded epoch's dispatch is refused **and leaves the pending set untouched**, so the refusal has no side effects; the current epoch is never fenced against itself; `NoEpoch` (election off) is never fenced at all; a stale state flush cannot roll the virtual clock backwards; a flush replaces rather than merges, so no tenant's finish tag survives from an older term; every dispatched entry is stamped with the term that wrote it, and stamped zero when election is off |
 | Gray failure | A leader superseded while still running is refused at the resource and stands down, with the proof taken from the dispatch log rather than the engine's opinion of itself: the epochs on the execution stream never go backwards, and every task is dispatched exactly once. Its lease renewal is configured not to fire within the test window, so the fence is the only thing that can stop it. Deleting the fence makes the test fail with 172 of 400 entries dispatched under a dead term |
 | Failover | Two engines: one leads, the other stands by, and after the leader departs all 80 tasks are dispatched exactly once; a promoted standby inherits the virtual clock rather than restarting it (verified with equal-sized batches, so "unchanged" would fail); a promoted standby reclaims ingress entries the dead leader never acknowledged |
+| Fault injection | The proxy forwards while healthy, kills established connections on a cut (not merely refusing new ones, which is what the store experiment depends on), refuses new connections while cut, restores service on heal, counts cuts idempotently, and survives an unreachable target |
+| Store durability | A leadership epoch that cannot be replicated is refused rather than used, and the grant is handed back so a peer can take it; with the wait disabled the acquire path is unchanged; a negative replica count is rejected at construction; Sentinel config requires a master name and addresses, bounds the wait, and is off by default |
 | Redis integration | Full ingress-to-results flow; atomic dispatch loses nothing; `max_in_flight` enforcement; idempotent completion under duplicate delivery; idempotent admission; retry counting through to dead-lettering with metadata; `XAUTOCLAIM` reclaim; scheduler state persistence; namespace reset |
 | End-to-end | The benchmark harness completes every task and writes well-formed CSVs; a worker abandoning 100% of attempts dead-letters everything with correct attempt counts; with 35% intermittent failures every task still reaches a terminal state and no task is recorded twice |
 
@@ -1932,10 +1988,10 @@ that has never been seen to fail is not evidence that the thing it guards works.
   of the fairness cost of partitioning. Leader election makes the scheduler
   *available*; it does not make it *scalable*, and sharding is the only way to
   get past one process without giving up global ordering.
-- Redis failover and network-partition injection. Failover of the scheduler is
-  now measured, including the gray failure where the leader is frozen rather
-  than killed; failover of the store it depends on is not, and the fencing
-  argument assumes a Redis that does not lose writes on promotion.
+- Partitioning a scheduler from a healthy Redis. Scheduler failure is measured,
+  including a leader frozen rather than killed, and store failure is measured
+  under Sentinel — but not a scheduler cut off from a master that stays up. The
+  fault-injecting proxy built for the store experiment already supports it.
 - Real task bodies alongside the simulated ones, to check how far the
   sleep-based conclusions transfer.
 - Latency-aware autoscaling driven by `tq_pending_tasks` and

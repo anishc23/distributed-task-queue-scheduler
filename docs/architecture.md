@@ -191,6 +191,29 @@ Measured, not asserted — see `cmd/failoverbench` and section 4.7 of the report
 | Hard crash | About one lease TTL. Redis must expire the key before a standby can safely take over. |
 | Hard crash, one replica | Unbounded. Nothing takes over. |
 | Leader frozen past its lease, then resumed | One lease TTL, and the resumed leader is refused at the resource. This is the case the fence exists for; see the `pause` arm. |
+| Redis master fails over to a lagging replica | Measured, and it breaks the fence unless the master is configured to refuse unreplicated writes. See below. |
+
+### The fence inherits the store's durability
+
+The epoch counter lives in Redis, so the fence's guarantee is only as strong as
+that key. Under Redis Sentinel with asynchronous replication, a promotion to a
+replica that had not caught up discards the `INCR` that issued the current
+token, and the promoted node hands the same number out again — one token, two
+leadership terms, measured in 10 trials out of 10 (report section 4.9).
+
+Having the leader wait for the epoch to replicate is not sufficient, because the
+counter is advanced before the wait; a lost write can be detected but not
+un-issued. The configuration that holds is `min-replicas-to-write` on the
+master, which makes the `INCR` fail outright rather than succeed unreplicably:
+
+```
+min-replicas-to-write 1
+min-replicas-max-lag  10
+```
+
+This is a deployment setting, not a code change, which is the point worth
+carrying away: the correctness of a fencing scheme is a property of the token
+*and* of the store that holds it, and only one of those is in this repository.
 
 Lowering the TTL shortens failover and raises the chance that an ordinary
 latency spike is mistaken for a death. The default of 5s with a 1.5s renewal

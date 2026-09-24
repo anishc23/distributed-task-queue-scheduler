@@ -55,6 +55,18 @@ results/
 | `leaders_after_resume` | `pause` arm only: leadership sum once the superseded leader is running again; must be 1 |
 | `fenced_operations` | `pause` arm only: 1 when the resumed leader attempted a write and Redis refused it, 0 when its own lease renewal noticed first and it stood down before trying. Both are correct outcomes; the split says how often the lease alone would not have been enough |
 
+A store-failure run (`make storefault`) writes `storefault.csv`, one row per
+trial. The columns that carry the result:
+
+| column | meaning |
+| --- | --- |
+| `epoch_reused` | **the violation**: one fencing token issued to two different leadership terms. Observed continuously and recorded outside Redis, because the fault destroys Redis state |
+| `epoch_regressed` | the counter read back lower than it was. Less reliable than `epoch_reused`: a new leader often advances it again before it can be sampled |
+| `tasks_lost` | acknowledged submissions that exist nowhere after the promotion |
+| `ingress_lost_entries` | the same loss measured at the store level, by comparing the dying master with the node promoted in its place |
+| `submitted` vs `completed` | the gap is work the producer was told had been accepted and which never ran |
+| `notes` | `fault-healed-before-kill` marks a trial whose injected fault Sentinel repaired before it mattered; such trials abort rather than report |
+
 Treat `outage_ms = -1` as censored data. Averaging it as a number is the single
 easiest way to misreport this experiment, which is why the plotting script draws
 the `single` arm as a hatched bar spanning the axis instead of a value.

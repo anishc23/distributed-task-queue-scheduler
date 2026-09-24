@@ -13,6 +13,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -406,5 +407,75 @@ func TestTermReturningAnErrorIsReported(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Campaign did not return after its leader loop failed")
+	}
+}
+
+// The epoch durability wait exists because a fencing token that lives on one
+// machine is not a fencing token. These tests run against a standalone Redis
+// with no replicas, which is precisely the condition the wait is meant to
+// refuse: WAIT can never be satisfied, so a leader must not proceed.
+func TestAcquireRefusesWhenTheEpochCannotBeMadeDurable(t *testing.T) {
+	rdb, keys := newKeys(t)
+	ctx := context.Background()
+
+	l, err := lease.New(lease.Options{
+		Redis: rdb, Keys: keys, Owner: "needs-durability",
+		TTL: 5 * time.Second, Renew: time.Second, Retry: 200 * time.Millisecond,
+		WaitForReplicas: 1, WaitTimeout: 500 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("build lease: %v", err)
+	}
+
+	epoch, ok, err := l.Acquire(ctx)
+	if ok {
+		t.Fatalf("acquired epoch %d with no replica able to acknowledge it; "+
+			"a leader whose token may not survive a failover must not lead", epoch)
+	}
+	if err == nil {
+		t.Fatal("expected an error explaining why leadership was declined")
+	}
+	if !strings.Contains(err.Error(), "durab") && !strings.Contains(err.Error(), "replica") {
+		t.Errorf("error %q does not say why leadership was declined", err)
+	}
+
+	// The grant must be handed back, not left held by a process that decided
+	// not to lead. Otherwise the queue waits out a TTL for nothing.
+	held, err := rdb.Get(ctx, keys.Holder).Result()
+	if err == nil && held != "" {
+		t.Errorf("the holder key is still set to %q after a refused acquisition; "+
+			"the grant was not released and no peer can take it until it expires", held)
+	}
+}
+
+// A peer with the wait switched off is unaffected, which keeps the mitigation
+// opt-in and leaves a single-Redis deployment on exactly its previous path.
+func TestAcquireIsUnaffectedWhenTheWaitIsDisabled(t *testing.T) {
+	rdb, keys := newKeys(t)
+	ctx := context.Background()
+
+	l := newLease(t, rdb, keys, "no-wait", 5*time.Second)
+	epoch, ok, err := l.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if !ok || epoch <= 0 {
+		t.Fatalf("acquire returned epoch %d ok=%v, want a real grant", epoch, ok)
+	}
+	if err := l.Release(ctx); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+}
+
+// A negative count is a configuration error rather than something to interpret.
+func TestNegativeWaitForReplicasIsRejected(t *testing.T) {
+	rdb, keys := newKeys(t)
+	_, err := lease.New(lease.Options{
+		Redis: rdb, Keys: keys, Owner: "bad",
+		TTL: time.Second, Renew: 300 * time.Millisecond,
+		WaitForReplicas: -1,
+	})
+	if err == nil {
+		t.Fatal("a negative wait_for_replicas was accepted")
 	}
 }

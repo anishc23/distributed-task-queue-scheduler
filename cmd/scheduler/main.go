@@ -129,6 +129,11 @@ func main() {
 			Renew:  le.RenewInterval.D(),
 			Retry:  le.RetryInterval.D(),
 			Logger: log,
+			// Only meaningful behind Sentinel, where a promotion can lose the
+			// epoch the fence depends on. Zero elsewhere, which is the
+			// original path exactly.
+			WaitForReplicas: cfg.Redis.Sentinel.WaitForReplicas,
+			WaitTimeout:     cfg.Redis.Sentinel.WaitTimeout.D(),
 		})
 		if err != nil {
 			cli.Fail(log, "cannot build the scheduler lease", err)

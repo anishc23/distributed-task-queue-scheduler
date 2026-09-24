@@ -452,6 +452,94 @@ Deleting the fence and re-running the deterministic version of that scenario
 on the wire under a dead term**, which is both the counterfactual and the
 evidence that the test has teeth.
 
+## Store failure experiments
+
+`cmd/storefaultbench` breaks Redis underneath a running queue. Everything else
+in this work measures the *scheduler* failing; this measures what happens when
+the thing the scheduler's correctness argument depends on fails instead.
+
+```bash
+make storefault STOREFAULT_REPETITIONS=10
+make storefault-plots RUN=storefault
+```
+
+It builds its own throwaway Sentinel cluster — one master, two replicas, three
+sentinels, on ports 7301+ and 27301+ — so it never touches the Redis used by
+every other target. It needs `redis-server` and `redis-sentinel` on `PATH` and
+no container runtime.
+
+### Why the fence is at stake
+
+The fencing token is a monotonic counter held in Redis. Its guarantee is that
+once epoch *N* has written, nothing below *N* writes again, and that holds only
+while the counter survives. A Sentinel promotion to a replica that had not
+caught up discards writes the master had already acknowledged, including that
+`INCR`. The promoted node then hands the same number out again, and one token
+identifies two leadership terms.
+
+### The three things that made the experiment real
+
+Each of these was found by getting it wrong and watching the arm pass.
+
+**A stopped process is not a partitioned one.** `SIGSTOP` on a replica does not
+stop replication. The kernel keeps accepting and acknowledging TCP segments for
+a stopped process, so the stream accumulates in the socket buffer and is applied
+in full on resume. The replica ends up with everything and the trial reports no
+loss. Replication therefore runs through `internal/netfault`, a small proxy that
+can be severed.
+
+**A graceful shutdown is not a crash.** Redis 7 and later wait for replicas to
+catch up during `SHUTDOWN`. A politely stopped master loses nothing, so every
+kill in this experiment is `SIGKILL`.
+
+**Sentinel repairs the fault.** Sentinel reconfigures a replica whose master
+address it does not recognise, quietly undoing the injected partition on its own
+refresh period. The fault window is short and fixed, and the harness verifies
+replication is *still* down at the moment the master dies, aborting the trial
+otherwise rather than reporting a clean failover as a lossy one.
+
+### The arms
+
+| arm | fault | mitigation |
+| --- | --- | --- |
+| `clean` | master killed, replicas caught up | none — the control |
+| `lagging` | replication cut, then the master killed | none |
+| `epochwait` | the same | lease waits for a replica to acknowledge a new epoch |
+| `guarded` | the same | the above, plus `min-replicas-to-write` on the master |
+
+The two mitigations are separated on purpose. Enabled together they plainly
+work, which would leave the useful question unanswered: whether protecting the
+token alone is enough. It is not.
+
+### What this experiment found
+
+Across 40 trials:
+
+- **`lagging`: 10/10 trials issued one fencing token to two different leaders**,
+  and destroyed about 1,000 acknowledged tasks each.
+- **`epochwait`: also 10/10.** Waiting for the epoch to replicate does not help,
+  because the counter is incremented *before* the wait. A lost write can be
+  detected afterwards but not un-issued.
+- **`guarded`: 0/10, and no tasks destroyed.** Refusing the write is what works:
+  the `INCR` fails outright with `NOREPLICAS` while no replica can take it.
+- **`clean`: 0/10.** The control has to be clean or the harness is measuring
+  itself.
+
+The guarded configuration accepted half as many submissions, which is the cost
+and is worth stating precisely: the unguarded arms *completed* the same number
+of tasks. They merely also told the producer they had accepted work they then
+destroyed. The guard converts silent data loss into a visible error.
+
+### Which column to trust
+
+`epoch_rewound` and `epoch_reused` disagree, and the reused-token count is the
+reliable one. Rewinding is detected by reading the counter from the promoted
+node afterwards, by which point a new leader has often already advanced it past
+where it was. Token reuse is observed continuously and recorded in the harness's
+own memory, outside the store — because the fault under test destroys Redis
+state, and asking the survivor to describe the part it slept through is not a
+measurement.
+
 ## Known limitations
 
 1. **Simulated execution.** Workers sleep rather than compute by default.

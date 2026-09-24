@@ -12,6 +12,35 @@ redis:
   read_timeout: 3s
   write_timeout: 3s
   pool_size: 32
+  # High availability for the store itself. Off by default: with it off the
+  # client holds the single address above, which is what every experiment in
+  # this repository uses.
+  #
+  # Turning it on changes what the fencing token depends on. The token is a
+  # monotonic counter in Redis, and its guarantee holds only while that counter
+  # survives. A Sentinel promotion to a replica that had not caught up loses
+  # acknowledged writes, and the store-failure experiment shows what follows:
+  # one token issued to two different leaders. Two settings prevent it, and
+  # they are not interchangeable — see docs/report.md section 4.9.
+  #
+  #   1. min-replicas-to-write on the Redis master itself (redis.conf, not
+  #      here). This makes the master refuse writes it cannot hand to a
+  #      replica, so the counter is never advanced in a way that can be lost.
+  #      This is the one that closes the hole.
+  #   2. wait_for_replicas below, which makes a new leader wait for its epoch
+  #      to reach a replica before acting on it. This narrows the window but
+  #      cannot close it on its own: the counter is incremented before the
+  #      wait, so a master that dies in between has already lost it.
+  #
+  # sentinel:
+  #   enabled: true
+  #   master_name: mymaster
+  #   addrs:
+  #     - 127.0.0.1:26379
+  #     - 127.0.0.1:26380
+  #     - 127.0.0.1:26381
+  #   wait_for_replicas: 1
+  #   wait_timeout: 2s
 
 streams:
   # Every Redis key is prefixed with this namespace, so independent runs can

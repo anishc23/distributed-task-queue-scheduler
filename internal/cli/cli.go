@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/anishc23/distributed-task-queue/internal/config"
 )
@@ -24,6 +25,14 @@ type CommonFlags struct {
 	Namespace  string
 	LogLevel   string
 	LogFormat  string
+
+	// Sentinel discovery. These exist as flags, not only as configuration,
+	// because the store-failure experiment starts real scheduler processes and
+	// has to point them at a Sentinel set it built moments earlier.
+	SentinelAddrs      string
+	SentinelMasterName string
+	WaitForReplicas    int
+	WaitTimeout        time.Duration
 }
 
 // Register binds the common flags onto a flag set.
@@ -34,6 +43,10 @@ func (c *CommonFlags) Register(fs *flag.FlagSet) {
 	fs.StringVar(&c.Namespace, "namespace", envOr("TQ_NAMESPACE", ""), "Redis key namespace (overrides streams.namespace)")
 	fs.StringVar(&c.LogLevel, "log-level", envOr("TQ_LOG_LEVEL", ""), "log level: debug, info, warn, error")
 	fs.StringVar(&c.LogFormat, "log-format", envOr("TQ_LOG_FORMAT", ""), "log format: text or json")
+	fs.StringVar(&c.SentinelAddrs, "sentinel-addrs", envOr("TQ_SENTINEL_ADDRS", ""), "comma-separated Redis Sentinel addresses; enables Sentinel discovery and overrides redis.addr")
+	fs.StringVar(&c.SentinelMasterName, "sentinel-master", envOr("TQ_SENTINEL_MASTER", ""), "the name Sentinel monitors the master under")
+	fs.IntVar(&c.WaitForReplicas, "wait-for-replicas", -1, "replicas that must acknowledge a newly acquired leadership epoch before it is used; 0 disables, -1 keeps the configured value")
+	fs.DurationVar(&c.WaitTimeout, "wait-timeout", 0, "bound on the epoch durability wait (0 keeps the configured value)")
 }
 
 // Apply loads the configuration file and applies flag overrides, validating the
@@ -52,6 +65,25 @@ func (c *CommonFlags) Apply() (*config.Config, error) {
 	}
 	if c.Namespace != "" {
 		cfg.Streams.Namespace = c.Namespace
+	}
+	if c.SentinelAddrs != "" {
+		var addrs []string
+		for _, a := range strings.Split(c.SentinelAddrs, ",") {
+			if a = strings.TrimSpace(a); a != "" {
+				addrs = append(addrs, a)
+			}
+		}
+		cfg.Redis.Sentinel.Enabled = true
+		cfg.Redis.Sentinel.Addrs = addrs
+	}
+	if c.SentinelMasterName != "" {
+		cfg.Redis.Sentinel.MasterName = c.SentinelMasterName
+	}
+	if c.WaitForReplicas >= 0 {
+		cfg.Redis.Sentinel.WaitForReplicas = c.WaitForReplicas
+	}
+	if c.WaitTimeout > 0 {
+		cfg.Redis.Sentinel.WaitTimeout = config.Duration(c.WaitTimeout)
 	}
 	if c.LogLevel != "" {
 		cfg.Log.Level = c.LogLevel

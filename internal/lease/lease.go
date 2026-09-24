@@ -73,17 +73,38 @@ type Options struct {
 	Renew  time.Duration // how often the holder extends it
 	Retry  time.Duration // how often a standby retries
 	Logger *slog.Logger
+
+	// WaitForReplicas makes a freshly acquired epoch wait for this many
+	// replicas to acknowledge it before the holder is told it leads. Zero
+	// disables the wait, which is correct for a single Redis and is the
+	// behaviour everything had before this option existed.
+	//
+	// This exists because of a measured failure, not a hypothetical one. The
+	// fence's guarantee is that once epoch N has written, nothing below N ever
+	// writes again, and that rests entirely on the epoch counter surviving. A
+	// Redis failover to a replica that had not caught up loses acknowledged
+	// writes: in the store-failure experiment the counter came back *missing*,
+	// which resets the floor to zero and lets every superseded leader through.
+	// Waiting here makes exactly the one write that the fence depends on
+	// durable, and leaves every other write on the fast path.
+	WaitForReplicas int
+	// WaitTimeout bounds that wait. Exceeding it is not a slow success: it
+	// means the epoch may not survive a failover, so the acquisition is
+	// abandoned and the lease released.
+	WaitTimeout time.Duration
 }
 
 // Lease is a Redis-backed leader lease. It is safe for concurrent use.
 type Lease struct {
-	rdb   *redis.Client
-	keys  Keys
-	owner string
-	ttl   time.Duration
-	renew time.Duration
-	retry time.Duration
-	log   *slog.Logger
+	rdb         *redis.Client
+	keys        Keys
+	owner       string
+	ttl         time.Duration
+	renew       time.Duration
+	retry       time.Duration
+	waitRepl    int
+	waitTimeout time.Duration
+	log         *slog.Logger
 
 	mu    sync.Mutex
 	value string // "<owner>|<epoch>" of the grant currently held, empty if none
@@ -128,14 +149,26 @@ func New(opts Options) (*Lease, error) {
 		log = slog.New(slog.NewTextHandler(os.Stderr, nil))
 	}
 
+	if opts.WaitForReplicas < 0 {
+		return nil, fmt.Errorf("lease: wait_for_replicas must be >= 0, got %d", opts.WaitForReplicas)
+	}
+	waitTimeout := opts.WaitTimeout
+	if opts.WaitForReplicas > 0 && waitTimeout <= 0 {
+		// Defaulting rather than failing, but not to something unbounded: a
+		// wait that can outlive the lease it is protecting is worse than none.
+		waitTimeout = opts.TTL / 2
+	}
+
 	return &Lease{
-		rdb:   opts.Redis,
-		keys:  opts.Keys,
-		owner: owner,
-		ttl:   opts.TTL,
-		renew: renew,
-		retry: retry,
-		log:   log.With("component", "lease", "owner", owner),
+		rdb:         opts.Redis,
+		keys:        opts.Keys,
+		owner:       owner,
+		ttl:         opts.TTL,
+		renew:       renew,
+		retry:       retry,
+		waitRepl:    opts.WaitForReplicas,
+		waitTimeout: waitTimeout,
+		log:         log.With("component", "lease", "owner", owner),
 	}, nil
 }
 
@@ -230,14 +263,70 @@ func (l *Lease) Acquire(ctx context.Context) (int64, bool, error) {
 		return NoEpoch, false, nil
 	}
 
+	// Make the epoch durable before acting on it. Until this returns, the
+	// counter that the entire fencing argument rests on exists only on one
+	// machine.
+	if err := l.awaitEpochDurable(ctx, epoch, value); err != nil {
+		return NoEpoch, false, err
+	}
+
 	l.mu.Lock()
 	l.value, l.epoch = value, epoch
 	l.mu.Unlock()
 	return epoch, true, nil
 }
 
+// awaitEpochDurable blocks until the write that produced this epoch has reached
+// the configured number of replicas, and gives the grant back if it cannot.
+//
+// WAIT is not a consensus protocol and this does not pretend otherwise. It
+// reports how many replicas acknowledged the writes issued so far, which turns
+// "the master said yes" into "at least N machines have it". That is enough to
+// stop a Sentinel promotion from silently rewinding the fence, which is the
+// failure this guards; it is not enough to make Redis linearizable, and a
+// deployment that needs that should hold the epoch somewhere with real
+// consensus.
+//
+// Releasing on failure is the important half. A leader that keeps a grant whose
+// epoch might not survive a failover is exactly the situation the fence cannot
+// recover from, so not leading is the safer outcome.
+func (l *Lease) awaitEpochDurable(ctx context.Context, epoch int64, value string) error {
+	if l.waitRepl <= 0 {
+		return nil
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, l.waitTimeout)
+	defer cancel()
+
+	acked, err := l.rdb.Wait(waitCtx, l.waitRepl, l.waitTimeout).Result()
+	if err == nil && int(acked) >= l.waitRepl {
+		return nil
+	}
+
+	// Hand the grant back so a peer can take it, using a context that is not
+	// the one that just timed out.
+	releaseCtx, releaseCancel := context.WithTimeout(context.WithoutCancel(ctx), 2*time.Second)
+	defer releaseCancel()
+	if _, rerr := releaseScript.Run(releaseCtx, l.rdb, []string{l.keys.Holder}, value).Result(); rerr != nil {
+		l.log.Warn("could not release a grant whose epoch is not durable",
+			"epoch", epoch, "error", rerr)
+	}
+	if err != nil {
+		return fmt.Errorf("lease acquire: epoch %d durability wait failed: %w", epoch, err)
+	}
+	return fmt.Errorf("lease acquire: epoch %d reached %d of %d replicas within %s; standing down rather than leading on an epoch that may not survive a failover",
+		epoch, acked, l.waitRepl, l.waitTimeout)
+}
+
 // Renew extends the current grant. It returns false when the grant is gone,
 // which means another process may already be leading.
+//
+// Renewal deliberately does not wait for replicas, even when Acquire does. A
+// renewal carries no new epoch: it re-sets a holder key whose loss costs at
+// most one lease TTL of availability, which a standby then takes over. The
+// epoch is different in kind — losing it rewinds the fence floor for every
+// term that follows — so it is the one write worth paying for. Waiting on
+// every renewal would put a replication round trip on the critical path
+// several times a second to protect something that expires on its own.
 func (l *Lease) Renew(ctx context.Context) (bool, error) {
 	l.mu.Lock()
 	value := l.value

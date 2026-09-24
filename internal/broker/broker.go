@@ -31,16 +31,37 @@ type Broker struct {
 }
 
 // New dials Redis using the supplied configuration.
+//
+// With Sentinel enabled the client follows the master through a failover
+// instead of holding a fixed address. That is the same *redis.Client type, so
+// nothing downstream — scripts, the fence, the lease — knows the difference.
+// What does change is the durability of what they write, which is why the
+// lease can be asked to wait for replicas; see config.Sentinel.
 func New(cfg *config.Config) (*Broker, error) {
-	rdb := redis.NewClient(&redis.Options{
-		Addr:         cfg.Redis.Addr,
-		Password:     cfg.Redis.Password,
-		DB:           cfg.Redis.DB,
-		DialTimeout:  cfg.Redis.DialTimeout.D(),
-		ReadTimeout:  cfg.Redis.ReadTimeout.D(),
-		WriteTimeout: cfg.Redis.WriteTimeout.D(),
-		PoolSize:     cfg.Redis.PoolSize,
-	})
+	var rdb *redis.Client
+	if s := cfg.Redis.Sentinel; s.Enabled {
+		rdb = redis.NewFailoverClient(&redis.FailoverOptions{
+			MasterName:       s.MasterName,
+			SentinelAddrs:    s.Addrs,
+			SentinelPassword: s.Password,
+			Password:         cfg.Redis.Password,
+			DB:               cfg.Redis.DB,
+			DialTimeout:      cfg.Redis.DialTimeout.D(),
+			ReadTimeout:      cfg.Redis.ReadTimeout.D(),
+			WriteTimeout:     cfg.Redis.WriteTimeout.D(),
+			PoolSize:         cfg.Redis.PoolSize,
+		})
+	} else {
+		rdb = redis.NewClient(&redis.Options{
+			Addr:         cfg.Redis.Addr,
+			Password:     cfg.Redis.Password,
+			DB:           cfg.Redis.DB,
+			DialTimeout:  cfg.Redis.DialTimeout.D(),
+			ReadTimeout:  cfg.Redis.ReadTimeout.D(),
+			WriteTimeout: cfg.Redis.WriteTimeout.D(),
+			PoolSize:     cfg.Redis.PoolSize,
+		})
+	}
 	return &Broker{rdb: rdb, keys: NewKeys(cfg.Streams), maxLen: cfg.Streams.MaxLen, owned: true}, nil
 }
 

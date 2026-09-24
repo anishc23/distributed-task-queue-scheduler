@@ -349,3 +349,75 @@ func TestIngressReclaimIsFarMoreAggressiveThanExecRecovery(t *testing.T) {
 			cfg.Scheduler.IngestReclaimMinIdle, cfg.Recovery.MinIdle)
 	}
 }
+
+// Sentinel discovery replaces the fixed address rather than supplementing it,
+// so the fields that make discovery possible become the required ones. Leaving
+// redis.addr required here would invite someone to set a stale address and then
+// wonder why a failover changed nothing.
+func TestSentinelValidation(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "enabled without a master name",
+			body: "redis:\n  sentinel:\n    enabled: true\n    addrs: [\"127.0.0.1:26379\"]\n",
+			want: "master_name",
+		},
+		{
+			name: "enabled without any sentinel addresses",
+			body: "redis:\n  sentinel:\n    enabled: true\n    master_name: mymaster\n",
+			want: "addrs",
+		},
+		{
+			name: "negative replica wait",
+			body: "redis:\n  sentinel:\n    enabled: true\n    master_name: mymaster\n    addrs: [\"127.0.0.1:26379\"]\n    wait_for_replicas: -1\n",
+			want: "wait_for_replicas",
+		},
+		{
+			name: "replica wait without a bound on it",
+			body: "redis:\n  sentinel:\n    enabled: true\n    master_name: mymaster\n    addrs: [\"127.0.0.1:26379\"]\n    wait_for_replicas: 1\n    wait_timeout: 0s\n",
+			want: "wait_timeout",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := config.Load(writeConfig(t, tc.body))
+			if err == nil {
+				t.Fatalf("expected a validation error mentioning %q", tc.want)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error %q does not name the offending field %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// With Sentinel on, a missing redis.addr is fine: the address is discovered.
+func TestSentinelMakesTheFixedAddressOptional(t *testing.T) {
+	body := "redis:\n  addr: \"\"\n  sentinel:\n    enabled: true\n    master_name: mymaster\n    addrs: [\"127.0.0.1:26379\", \"127.0.0.1:26380\"]\n"
+	cfg, err := config.Load(writeConfig(t, body))
+	if err != nil {
+		t.Fatalf("a Sentinel configuration without redis.addr was rejected: %v", err)
+	}
+	if !cfg.Redis.Sentinel.Enabled {
+		t.Error("sentinel.enabled did not survive loading")
+	}
+	if got := len(cfg.Redis.Sentinel.Addrs); got != 2 {
+		t.Errorf("loaded %d sentinel addresses, want 2", got)
+	}
+}
+
+// Sentinel is off unless asked for, so every existing deployment and every
+// experiment keeps the single-address path it had.
+func TestSentinelIsOffByDefault(t *testing.T) {
+	cfg := config.Default()
+	if cfg.Redis.Sentinel.Enabled {
+		t.Error("sentinel is enabled by default; a single-Redis deployment would change behaviour on upgrade")
+	}
+	if cfg.Redis.Sentinel.WaitForReplicas != 0 {
+		t.Errorf("wait_for_replicas defaults to %d; it must default to 0 so the acquire path is unchanged",
+			cfg.Redis.Sentinel.WaitForReplicas)
+	}
+}

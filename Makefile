@@ -25,6 +25,9 @@ REPETITIONS     ?= 1
 # measurement, so one of them says nothing. Kept separate from REPETITIONS so
 # that `make failover` is useful without arguments.
 FAILOVER_REPETITIONS ?= 15
+# Store-failure trials build and tear down a whole Sentinel cluster each time,
+# so they are slower per trial than the scheduler failover ones.
+STOREFAULT_REPETITIONS ?= 10
 RUN             ?=
 RESULTS_DIR     ?= results
 RUN_CONFIG      ?= experiments/quick.yaml
@@ -306,6 +309,24 @@ failover: ## Measure the dispatch outage from killing, and from freezing, the sc
 failover-plots: ## Chart the failover results: make failover-plots RUN=failover
 	@test -x $(VENV_PY) || { echo "run 'make python-deps' first"; exit 1; }
 	$(VENV_PY) scripts/plot_failover.py --results-dir=$(RESULTS_DIR) --run=$(or $(RUN),failover)
+
+.PHONY: storefault
+storefault: ## Break Redis underneath a running queue and measure the fence: make storefault STOREFAULT_REPETITIONS=10
+	@command -v redis-server >/dev/null || { echo "redis-server is required (brew install redis)"; exit 1; }
+	@command -v redis-sentinel >/dev/null || { echo "redis-sentinel is required (it ships with redis)"; exit 1; }
+	@# This builds its own throwaway Sentinel cluster on ports 7301+ and 27301+,
+	@# so it does not touch the Redis used by every other target. It kills real
+	@# processes and measures what survives, so it wants an idle machine for the
+	@# same reasons `make failover` does.
+	$(shell command -v caffeinate >/dev/null && echo caffeinate -dims) \
+		$(GO) run ./cmd/storefaultbench \
+		--repetitions=$(STOREFAULT_REPETITIONS) \
+		--run-id=$(or $(RUN),storefault) --results-dir=$(RESULTS_DIR)
+
+.PHONY: storefault-plots
+storefault-plots: ## Chart the store-failure results: make storefault-plots RUN=storefault
+	@test -x $(VENV_PY) || { echo "run 'make python-deps' first"; exit 1; }
+	$(VENV_PY) scripts/plot_storefault.py --results-dir=$(RESULTS_DIR) --run=$(or $(RUN),storefault)
 
 .PHONY: ceiling
 ceiling: ## Measure the scheduler's own dispatch ceiling (no workers): make ceiling TASKS=20000

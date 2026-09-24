@@ -33,6 +33,37 @@ type Redis struct {
 	ReadTimeout  Duration `yaml:"read_timeout" json:"read_timeout"`
 	WriteTimeout Duration `yaml:"write_timeout" json:"write_timeout"`
 	PoolSize     int      `yaml:"pool_size" json:"pool_size"`
+	// Sentinel points the client at a Sentinel-managed master instead of a
+	// fixed address, so a Redis failover is survivable rather than fatal.
+	Sentinel Sentinel `yaml:"sentinel" json:"sentinel"`
+}
+
+// Sentinel configures discovery of a Redis master through Redis Sentinel.
+//
+// This changes which failures the queue can survive, and it also changes what
+// the fencing token depends on. The fence is a monotonic counter held in
+// Redis, and its guarantee — that once epoch N has written, nothing below N
+// ever writes again — assumes the store does not lose acknowledged writes. A
+// Sentinel failover to a replica that had not caught up breaks exactly that
+// assumption, so `min_replicas_to_write` on the master and a durability wait
+// on the epoch are part of running this safely, not optional hardening. See
+// the store-failure experiment and Section 4.9 of the report.
+type Sentinel struct {
+	Enabled bool `yaml:"enabled" json:"enabled"`
+	// MasterName is the name Sentinel monitors the master under.
+	MasterName string `yaml:"master_name" json:"master_name"`
+	// Addrs are the Sentinel endpoints, not the Redis ones.
+	Addrs []string `yaml:"addrs" json:"addrs"`
+	// Password authenticates to the Sentinels themselves, which is a
+	// different credential from the one used for the data connection.
+	Password string `yaml:"password" json:"password"`
+	// WaitForReplicas makes a newly acquired epoch wait for this many replicas
+	// to acknowledge it before the leader acts on it. Zero disables the wait
+	// and restores the previous behaviour exactly. See lease.Options.
+	WaitForReplicas int `yaml:"wait_for_replicas" json:"wait_for_replicas"`
+	// WaitTimeout bounds that wait. A leader that cannot make its epoch
+	// durable within it does not lead.
+	WaitTimeout Duration `yaml:"wait_timeout" json:"wait_timeout"`
 }
 
 // Streams holds the Redis key and stream names. Every name is configurable and
@@ -214,7 +245,23 @@ func displayPath(path string) string {
 func (c *Config) Validate() error {
 	var errs []error
 
-	if c.Redis.Addr == "" {
+	if c.Redis.Sentinel.Enabled {
+		// With Sentinel the data address is discovered, so requiring it would
+		// invite someone to set a stale one and wonder why failover silently
+		// did nothing.
+		if c.Redis.Sentinel.MasterName == "" {
+			errs = append(errs, errors.New("redis.sentinel.master_name is required when sentinel is enabled"))
+		}
+		if len(c.Redis.Sentinel.Addrs) == 0 {
+			errs = append(errs, errors.New("redis.sentinel.addrs is required when sentinel is enabled"))
+		}
+		if c.Redis.Sentinel.WaitForReplicas < 0 {
+			errs = append(errs, fmt.Errorf("redis.sentinel.wait_for_replicas must be >= 0, got %d", c.Redis.Sentinel.WaitForReplicas))
+		}
+		if c.Redis.Sentinel.WaitForReplicas > 0 && c.Redis.Sentinel.WaitTimeout.D() <= 0 {
+			errs = append(errs, errors.New("redis.sentinel.wait_timeout must be > 0 when wait_for_replicas is set"))
+		}
+	} else if c.Redis.Addr == "" {
 		errs = append(errs, errors.New("redis.addr is required"))
 	}
 	if c.Redis.DB < 0 {

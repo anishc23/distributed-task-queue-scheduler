@@ -14,7 +14,7 @@ priority, earliest deadline first (EDF) and weighted fair queuing (WFQ) — were
 compared across four synthetic workloads, seven levels of offered load, and two
 models of task execution.
 
-The study comprises **1,363 experiments over 4.88 million tasks**. Four results
+The study comprises **1,403 experiments over 4.99 million tasks**. Four results
 are reported. First, scheduling policy is decisive only in a narrow band around
 service capacity: the spread between the best and worst policy's 99th-percentile
 latency is 0.1% at half capacity, peaks at 93% at capacity, and falls to 1.1% at
@@ -32,7 +32,11 @@ crash costs a median 4.4 s of dispatch outage against a 5 s lease, and with no
 standby the queue never recovers at all. That last result is tested against the
 failure it is actually designed for — a leader frozen past its lease and then
 resumed, rather than killed — where the fence, and not the lease, is what
-refused the returning leader in 11 of 15 trials.
+refused the returning leader in 11 of 15 trials. Pushed one level further, the
+fence turns out to inherit the durability of the store beneath it: a Redis
+failover to a lagging replica issued one fencing token to two leaders in 10
+trials out of 10, and the fix is a store setting rather than a scheduler
+change.
 
 Three quantitative claims made earlier in this work were subsequently found to
 be wrong and are corrected here. That process is reported rather than concealed,
@@ -678,6 +682,117 @@ Section 6.1 rather than approximated.
 ![What stopped the superseded leader](images/failover_gray.png)
 
 
+### 4.9 What the fence rests on
+
+Sections 4.7 and 4.8 measure the scheduler failing. Both of them rest on an
+assumption about the *store* that was stated plainly and never tested: that
+Redis does not lose acknowledged writes. The fencing token is a monotonic
+counter held in Redis, and its guarantee — once epoch *N* has written, nothing
+below *N* writes again — is exactly as durable as that counter. This section
+tests the assumption instead of restating it.
+
+**Method.** `cmd/storefaultbench` builds a real Redis Sentinel cluster out of
+local `redis-server` and `redis-sentinel` processes — one master, two replicas,
+three sentinels — points the queue at it through Sentinel discovery, and then
+breaks the store underneath a running workload. Four arms, 10 trials each:
+
+| arm | fault | mitigation |
+| --- | --- | --- |
+| `clean` | master killed with replicas caught up | none |
+| `lagging` | replication cut, then the master killed | none |
+| `epochwait` | the same | the lease waits for a replica to acknowledge a new epoch |
+| `guarded` | the same | the above, plus `min-replicas-to-write` on the master |
+
+Three details decide whether this experiment measures anything, and each was
+found by getting it wrong first.
+
+*A stopped process is not a partitioned one.* The obvious way to make a replica
+fall behind is `SIGSTOP`. It does not work: the kernel goes on accepting and
+acknowledging TCP segments for a stopped process, so the replication stream
+accumulates in the socket buffer and is applied in full on resume. The first
+version of this arm reported no data loss for that reason. Losing data in
+transit requires cutting the path, so replication now runs through a small
+proxy (`internal/netfault`) that can be severed.
+
+*A graceful shutdown is not a crash.* Redis 7 and later wait for replicas to
+catch up during `SHUTDOWN`, so a politely stopped master loses nothing. Every
+kill here is `SIGKILL`.
+
+*Sentinel repairs the fault.* Sentinel reconfigures a replica whose master
+address it does not recognise, which silently undoes the injected partition on
+its own refresh period. The fault window is therefore short and fixed, and the
+harness **verifies that replication is still down at the moment the master
+dies**, aborting the trial otherwise. A fault-injection experiment that does not
+confirm the fault survived to the moment it mattered can pass while testing
+nothing.
+
+**Results** (10 trials per arm, 3,000 tasks each, 2 s lease):
+
+| arm | one token, two leaders | acknowledged tasks destroyed | submissions accepted | completed |
+| --- | ---: | ---: | ---: | ---: |
+| `clean` | **0 / 10** | 0 | 20,011 | 20,011 |
+| `lagging` | **10 / 10** | **10,010** | 20,020 | 10,010 |
+| `epochwait` | **10 / 10** | 10,009 | 20,019 | 10,010 |
+| `guarded` | **0 / 10** | 0 | 10,010 | 10,010 |
+
+**The fencing token is not safe under a Redis failover.** In every unguarded
+trial the same token was handed to two different leaders:
+
+```
+a fencing token was issued twice to different leaders
+epoch=2  first_holder=sched-2  second_holder=sched-1
+```
+
+A token that identifies two terms excludes neither. The mechanism is
+straightforward once seen: the epoch counter is advanced by an `INCR` on the
+master, the master dies before that reaches a replica, and the promoted node
+hands the same number out again. Around 1,000 tasks per trial went with it —
+work the producer had been told was accepted, which then existed nowhere.
+
+**The obvious mitigation does not work, and the reason is instructive.** Making
+the lease wait for a replica to acknowledge the new epoch before acting on it
+(`epochwait`) failed in 10 trials out of 10, exactly as often as no mitigation
+at all. The counter is incremented *before* the wait, so a master that dies in
+between has already lost it; the wait can report that the write did not survive,
+but it cannot un-issue the token. Detecting a lost write is not the same as
+preventing one. This is the arm worth keeping in the report precisely because it
+is the fix a reader would reach for first.
+
+**What works is refusing the write.** With `min-replicas-to-write` on the
+master, the `INCR` itself fails while no replica can receive it —
+`NOREPLICAS Not enough good replicas to write` — so no token is issued that
+could be lost, and no task is accepted that cannot be kept. Zero violations in
+10 trials, zero tasks destroyed.
+
+**The cost is availability, and it is visible rather than hidden.** The guarded
+arm accepted 10,010 submissions where the unguarded arms accepted 20,020. That
+gap is not lost throughput: the unguarded arms completed 10,010 tasks as well.
+The difference is that they *also told the producer* they had accepted another
+10,010 which they then destroyed. The guarded configuration converts silent data
+loss into an error the producer can see and retry. During normal operation the
+cost is nothing measurable: `min-replicas-to-write` is a local check on the
+master's replica count, and the epoch wait happens once per leadership term
+rather than once per write.
+
+**A note on which number to trust.** The `epoch_rewound` column disagrees with
+`token reused` — 0/10 in `lagging` against 10/10 in `epochwait` — and the
+reused-token count is the reliable one. Rewinding is detected by reading the
+counter from the promoted node after the fact, and by then a new leader has
+often already advanced it past where it was, hiding the gap. Token reuse is
+observed continuously and recorded in the harness's own memory, outside the
+store. That design choice was deliberate: asking the survivor of an accident to
+describe the part it slept through is not a measurement.
+
+**Scope.** This is Redis Sentinel with asynchronous replication, which is what
+the shipped deployment uses. It is not a claim about Redis Cluster, about
+Redis with AOF `appendfsync always`, or about any store with real consensus.
+The finding is narrower and more useful than "Redis loses data": a fencing token
+inherits the durability of whatever holds it, and the default configuration of
+the store this system ships with does not provide enough of it.
+
+![What a Redis failover does to the fence](images/storefault.png)
+
+
 ## 5. Threats to validity
 
 ### 5.1 Corrections made during this study
@@ -783,22 +898,24 @@ work and improved.
 
 ### 5.4 Remaining limitations
 
-1. **Single-node Redis.** No cluster, no failover. Redis failure modes are out of
-   scope, and the Lua scripts, while declaring all their keys, have not been
-   validated against Redis Cluster key-slot constraints. This matters more since
-   Section 4.7: the fencing argument assumes Redis does not lose acknowledged
-   writes, which a Sentinel failover can violate.
+1. **Redis Sentinel, not Redis Cluster.** Section 4.9 tests a Sentinel failover
+   and finds that the fencing argument does depend on store durability, with a
+   configuration that restores it. Redis Cluster is still out of scope, and the
+   Lua scripts, while declaring all their keys, have not been validated against
+   its key-slot constraints.
 2. **One scheduler dispatches at a time.** Replicas buy availability, not
    throughput. Scheduling capacity is still bounded by one process, which bounds
    the scale at which these results apply.
 3. **At-least-once only.** Duplicate execution is expected; only completion
    recording is idempotent.
-4. **Fault injection is shallow.** Worker crashes, application errors,
-   scheduler kills and a frozen-then-resumed scheduler — but no Redis failover
-   and no network partition. The gray failure the fence is designed for is now
-   reproduced (Section 4.8), but only in its process-local form: a stopped
-   process resumes with its Redis connection intact, whereas a real partition
-   also breaks the path to the store, and only the former is tested here.
+4. **Fault injection covers processes and the store, not the network between
+   schedulers.** Worker crashes, application errors, scheduler kills, a
+   frozen-then-resumed scheduler, a Redis failover and a severed replication
+   link are all injected. What is not tested is a scheduler partitioned from a
+   Redis that stays up: Section 4.8's frozen leader resumes with its connection
+   intact, and Section 4.9 cuts replication rather than the scheduler's own
+   path to the master. The proxy used in 4.9 would support it; the experiment
+   is not yet written.
 5. **No external baseline.** No comparison against Celery, Sidekiq or Temporal,
    so absolute throughput figures have no external reference point.
 6. **Timing is not reproducible**, only the workload. Cross-machine comparison is
@@ -844,6 +961,17 @@ the wire under a dead term. The distinction between holding a lock and proving
 at the point of the write that you still hold it is the difference between those
 two outcomes.
 
+**A fencing token is only as durable as the store that holds it.** Under a
+Redis Sentinel failover to a replica that had not caught up, the same token was
+issued to two different leaders in 10 trials out of 10, and about a thousand
+acknowledged tasks per trial were destroyed. The mitigation a reader reaches for
+first — having the leader wait for its epoch to replicate — fails just as often,
+because the counter is advanced before the wait and a lost write cannot be
+un-issued. What works is configuring the master to refuse writes it cannot
+replicate, which converts silent loss into an error the producer can see. The
+correctness of a fencing scheme is a property of the token *and* its storage,
+and only one of those is in the scheduler's source code.
+
 **Metric choice can hide the effect entirely.** Jain's index over completed
 service reports 0.246 for every policy under tenant skew, because it is
 demand-limited. The 35× isolation WFQ provides is visible only in per-tenant
@@ -869,14 +997,13 @@ to quantify what self-clocking costs; a tenant-sharded scheduler to lift the
 single-writer bound; and latency-aware autoscaling driven by queue depth rather
 than CPU.
 
-Sections 4.7 and 4.8 add two of their own. **Redis failover and partition
-injection**, because the fencing argument now depends on a store whose own
-failure modes are untested, and because a network partition is the one form of
-gray failure Section 4.8 does not reproduce: a stopped process comes back with
-its connection to Redis intact. And **a release notification**: a graceful
-handover currently costs up to one standby poll interval, which is a polling
-artefact rather than anything fundamental, and publishing on release would
-remove it.
+Sections 4.7 to 4.9 add two of their own. **Partitioning a scheduler from a
+healthy Redis**, which is the one fault shape still untested: 4.8 freezes a
+process that keeps its connection, and 4.9 cuts replication rather than the
+scheduler's own path to the master. The fault-injecting proxy built for 4.9
+already supports it. And **a release notification**: a graceful handover
+currently costs up to one standby poll interval, which is a polling artefact
+rather than anything fundamental, and publishing on release would remove it.
 
 ## Appendix A: Reproducing these results
 
@@ -901,8 +1028,14 @@ go run ./cmd/failoverbench --arms crash --repetitions 12 --seed 2 \
 go run ./cmd/failoverbench --arms crash --repetitions 12 --seed 3 \
   --lease-ttl 10s --lease-renew 3s    --run-id failover-ttl10s
 
+# Section 4.9: what happens to the fence when Redis itself fails over.
+# Builds its own throwaway Sentinel cluster; needs redis-server and
+# redis-sentinel on PATH and touches no other Redis.
+make storefault STOREFAULT_REPETITIONS=10 RUN=storefault
+
 make plots RUN=main && make sweep-plots RUN=sweep-loads
 make failover-plots RUN=failover
+make storefault-plots RUN=storefault
 ```
 
 The failover runs start real scheduler processes and kill them, so they need a
@@ -924,7 +1057,8 @@ Source, configurations and full result schemas:
 | Real work, tenant isolation | 40 | 80,000 |
 | Scheduler failover, five arms | 75 | 300,000 |
 | Failover, lease-TTL sensitivity | 24 | 96,000 |
-| **Total** | **1,363** | **4,876,000** |
+| Store failure under Sentinel, four arms | 40 | 120,000 |
+| **Total** | **1,403** | **4,996,000** |
 
 Failover rows count tasks *submitted*: the single-replica control arm leaves a
 median of 2,613 per trial permanently unscheduled, which is the result rather
