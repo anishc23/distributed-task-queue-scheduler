@@ -81,6 +81,7 @@ import (
 
 	"github.com/anishc23/distributed-task-queue/internal/broker"
 	"github.com/anishc23/distributed-task-queue/internal/config"
+	"github.com/anishc23/distributed-task-queue/internal/hostclock"
 	"github.com/anishc23/distributed-task-queue/internal/metrics"
 	"github.com/anishc23/distributed-task-queue/internal/worker"
 	"github.com/anishc23/distributed-task-queue/internal/workload"
@@ -343,6 +344,12 @@ func runTrial(ctx context.Context, cfg *runConfig, a arm, rep int, phase float64
 		Tasks: cfg.tasks,
 	}
 	trialStart := time.Now()
+	// The outage heuristic below catches a host that slept while the queue was
+	// busy, because the sleep shows up as an impossible dispatch gap. It cannot
+	// catch one that slept while the queue was idle, which leaves no unusual
+	// gap and every other number in the trial still wrong. This watches the
+	// clocks directly instead of inferring it.
+	clock := hostclock.Start()
 	defer func() { row.WallSeconds = time.Since(trialStart).Seconds() }()
 
 	ctx, cancel := context.WithTimeout(ctx, cfg.timeout)
@@ -511,6 +518,11 @@ func runTrial(ctx context.Context, cfg *runConfig, a arm, rep int, phase float64
 		cfg.log.Error("trial outage far exceeds the lease ttl; something outside the experiment interfered",
 			"arm", a.name, "rep", rep, "outage_ms", row.OutageMS, "lease_ttl_ms", cfg.leaseTTL.Milliseconds(),
 			"hint", "on a laptop this is usually idle sleep: run under `caffeinate -dims`")
+	}
+	if d := clock.Suspended(); d > hostclock.DefaultThreshold {
+		row.Suspect = true
+		cfg.log.Error("the host slept during this trial; its numbers are discarded",
+			"arm", a.name, "rep", rep, "slept", d)
 	}
 	return row, nil
 }

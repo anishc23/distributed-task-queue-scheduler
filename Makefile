@@ -30,6 +30,7 @@ FAILOVER_REPETITIONS ?= 15
 STOREFAULT_REPETITIONS ?= 10
 # The baseline sweeps six task durations, so each repetition is twelve runs.
 BASELINE_REPETITIONS ?= 5
+PARTITION_REPETITIONS ?= 12
 RUN             ?=
 RESULTS_DIR     ?= results
 RUN_CONFIG      ?= experiments/quick.yaml
@@ -311,6 +312,31 @@ failover: ## Measure the dispatch outage from killing, and from freezing, the sc
 failover-plots: ## Chart the failover results: make failover-plots RUN=failover
 	@test -x $(VENV_PY) || { echo "run 'make python-deps' first"; exit 1; }
 	$(VENV_PY) scripts/plot_failover.py --results-dir=$(RESULTS_DIR) --run=$(or $(RUN),failover)
+
+.PHONY: partition
+partition: ## Cut a scheduler off from a healthy Redis: make partition PARTITION_REPETITIONS=12
+	@$(MAKE) --no-print-directory redis-check
+	@# Redis stays up throughout; only the schedulers' paths to it are severed,
+	@# each through its own in-process proxy. Timing measurement, so it wants an
+	@# idle machine for the same reasons `make failover` does.
+	$(shell command -v caffeinate >/dev/null && echo caffeinate -dims) \
+		$(GO) run ./cmd/partitionbench --redis-addr=$(REDIS_ADDR) \
+		--repetitions=$(PARTITION_REPETITIONS) \
+		--run-id=$(or $(RUN),partition) --results-dir=$(RESULTS_DIR)
+
+.PHONY: partition-sweep
+partition-sweep: ## Outage against partition length: make partition-sweep RUN=partition-sweep
+	@$(MAKE) --no-print-directory redis-check
+	$(shell command -v caffeinate >/dev/null && echo caffeinate -dims) \
+		$(GO) run ./cmd/partitionbench --redis-addr=$(REDIS_ADDR) \
+		--repetitions=$(or $(SWEEP_REPETITIONS),8) --sweep="$(or $(SWEEP),0.25,0.5,0.75,1,1.5,2,3)" \
+		--run-id=$(or $(RUN),partition-sweep) --results-dir=$(RESULTS_DIR)
+
+.PHONY: partition-plots
+partition-plots: ## Chart the partition results: make partition-plots RUN=partition
+	@test -x $(VENV_PY) || { echo "run 'make python-deps' first"; exit 1; }
+	$(VENV_PY) scripts/plot_partition.py --results-dir=$(RESULTS_DIR) --run=$(or $(RUN),partition) \
+		$(if $(SWEEP_RUN),--sweep-run=$(SWEEP_RUN),)
 
 .PHONY: baseline
 baseline: ## Compare this queue against Asynq on identical work: make baseline BASELINE_REPETITIONS=5

@@ -63,6 +63,7 @@ import (
 
 	"github.com/anishc23/distributed-task-queue/internal/broker"
 	"github.com/anishc23/distributed-task-queue/internal/config"
+	"github.com/anishc23/distributed-task-queue/internal/hostclock"
 	"github.com/anishc23/distributed-task-queue/internal/metrics"
 	"github.com/anishc23/distributed-task-queue/internal/worker"
 	"github.com/anishc23/distributed-task-queue/internal/workload"
@@ -330,6 +331,11 @@ func buildScheduler(ctx context.Context) (string, func(), error) {
 func runTrial(ctx context.Context, cfg *runConfig, a arm, rep int) (trial, error) {
 	row := trial{Arm: a.name, Rep: rep}
 	start := time.Now()
+	// A host that suspends mid-trial produces numbers that look like findings:
+	// a promoted replica missing data because the harness slept through the
+	// replication, a failover time that includes the nap. Detected directly
+	// rather than inferred from any single suspicious value.
+	clock := hostclock.Start()
 	defer func() { row.WallSeconds = time.Since(start).Seconds() }()
 
 	ctx, cancel := context.WithTimeout(ctx, cfg.timeout)
@@ -633,6 +639,11 @@ func runTrial(ctx context.Context, cfg *runConfig, a arm, rep int) (trial, error
 	}
 
 	row.MaxEpochSeen, row.EpochsIssued = watch.snapshot()
+	if d := clock.Suspended(); d > hostclock.DefaultThreshold {
+		row.Notes = strings.TrimSpace(row.Notes + " host-slept")
+		cfg.log.Error("the host slept during this trial; its numbers are discarded",
+			"arm", a.name, "rep", rep, "slept", d)
+	}
 	entries := dispatchRecord(ctx, rdb, br.Keys().Exec)
 	row.Inversions = epochInversions(entries)
 	row.RecoveredDispatch = dispatchedAfter(entries, time.Now().Add(-25*time.Second))
