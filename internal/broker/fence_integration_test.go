@@ -280,6 +280,59 @@ func TestDispatchStampsTheEpochOnEveryEntry(t *testing.T) {
 	}
 }
 
+// The console reads the dispatch log by time window. It must return entries in
+// stream order, exclude anything older than the window, and carry the same
+// stamps a full read does.
+func TestDispatchesSinceReadsAWindowOfTheDispatchLog(t *testing.T) {
+	br, _ := newBroker(t)
+	ctx := testContext(t)
+	if err := br.EnsureStreams(ctx); err != nil {
+		t.Fatalf("ensure streams: %v", err)
+	}
+
+	pol := fifo.New()
+	admit := func(id string) {
+		tk := task(id, 0)
+		if _, err := br.Admit(ctx, tk, pol.Rank(tk), lease.NoEpoch); err != nil {
+			t.Fatalf("admit %s: %v", id, err)
+		}
+	}
+	admit("w-old")
+	if _, err := br.Dispatch(ctx, 1, 0, time.Now(), 4); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	cut := time.Now()
+	for _, id := range []string{"w-1", "w-2"} {
+		admit(id)
+	}
+	if _, err := br.Dispatch(ctx, 2, 0, time.Now(), 5); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+
+	got, err := br.DispatchesSince(ctx, cut, 100)
+	if err != nil {
+		t.Fatalf("dispatches since: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d entries, want the 2 dispatched after the cut", len(got))
+	}
+	if got[0].Task.ID != "w-1" || got[1].Task.ID != "w-2" {
+		t.Errorf("order = %s, %s; want stream order w-1, w-2", got[0].Task.ID, got[1].Task.ID)
+	}
+	for _, m := range got {
+		if m.Epoch != 5 {
+			t.Errorf("%s carries epoch %d, want 5", m.Task.ID, m.Epoch)
+		}
+		if m.DispatchedAt.Before(cut.Add(-time.Millisecond)) {
+			t.Errorf("%s was dispatched at %s, before the window began", m.Task.ID, m.DispatchedAt)
+		}
+	}
+	if got, err := br.DispatchesSince(ctx, cut, 1); err != nil || len(got) != 1 {
+		t.Errorf("count did not bound the read: %d entries, err %v", len(got), err)
+	}
+}
+
 // With election off there is no term to record, and the stamp must not invent
 // one. A zero here is what tells a reader that the entry is outside the fence's
 // scope rather than dispatched by term zero.

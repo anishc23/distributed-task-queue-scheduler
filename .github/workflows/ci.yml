@@ -262,3 +262,47 @@ jobs:
         run: |
           bash -n scripts/kind-up.sh
           bash -n scripts/kind-down.sh
+
+  web:
+    name: Research site and console frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+
+      - name: Type check
+        run: npm run typecheck
+
+      # Includes validating every committed dataset against its schema and
+      # asserting that every report claim recorded in index.json reproduced.
+      - name: Unit tests
+        run: npm test
+
+      - name: Production build
+        run: npm run build
+
+      # Runs against the production build in the runner's preinstalled Chrome.
+      - name: Browser tests
+        run: npx playwright test
+        env:
+          PW_CHANNEL: chrome
+
+      # The exporter needs results/, which is not in the repository, so CI
+      # cannot regenerate the data. It can check the script still parses and
+      # that it refuses to run without results rather than writing nothing.
+      - name: Exporter refuses to run without results
+        working-directory: .
+        run: |
+          python3 -m py_compile scripts/export_site_data.py
+          set +e; python3 scripts/export_site_data.py --check; code=$?; set -e
+          test "$code" = 2

@@ -29,6 +29,32 @@ policies, compared carefully under controlled conditions.
 
 ---
 
+## Research site and live console
+
+`web/` holds one frontend with two modes. They never share a data source.
+
+- **Research** is an interactive version of the report: architecture, method, and every result, with selectors over
+  the real experiment data. Each chart names the CSV files it came from, with their SHA-256 digests, and the
+  command that produced them. It is a static site; it needs nothing running.
+  `scripts/export_site_data.py` produces its data from `results/` and refuses to export unless all 74 numbers the
+  report quotes recompute from the raw CSVs. Building that check found four errors in the report, now corrected in
+  §5.1.
+- **Live system** is an operations console for a running queue (`cmd/console`). It reads Redis and every process's
+  `/healthz`, `/readyz` and `/metrics`, and shows leadership, the fence, queue depth and the dispatch log by epoch.
+  It labels data that is old or unreachable as such. In demo mode it runs its own two-scheduler cluster and can
+  kill, freeze or partition the leader, so a failover and a fence refusal can be watched as they happen. It listens
+  on loopback only and needs a per-run token for any change.
+
+```bash
+make web            # build the site into web/dist (Node 22)
+make web-dev        # research site with hot reload on http://127.0.0.1:5173
+make console-demo   # live console + demo cluster; open the URL it prints
+```
+
+Data pipeline, schema, API, security model and a ten-minute demo script: [docs/frontend.md](docs/frontend.md).
+
+---
+
 ## Architecture
 
 ```mermaid
@@ -1039,8 +1065,10 @@ show visibly worse latency and the gap should widen with load. FIFO and WFQ
 should show no priority gradient at all, since neither reads the priority field.
 `tq_max_observed_wait_seconds` is the live equivalent.
 
-**Deadline compliance.** EDF has the lowest miss rate at every load measured;
-its advantage shrinks as load rises but does not invert. If EDF is not winning,
+**Deadline compliance.** EDF has the lowest miss rate of the four policies up
+to 1.5x capacity and beats FIFO at every load measured; above 1.5x strict
+priority misses fewer deadlines, and EDF's lead over FIFO shrinks but does not
+invert. If EDF is not winning,
 check whether the run was under-loaded (nobody misses) or so overloaded that
 everybody misses. Always read the miss rate together with the maximum wait,
 since EDF buys compliance with starvation, and with the dead-letter count, since
@@ -1118,7 +1146,9 @@ from that merged directory.
 
 Environment: macOS 26.6 on an Apple M5 (10 cores), Redis 8.10.1 on localhost,
 4 worker processes x 4 slots = 16 slots, `max_in_flight=16`, arrivals at 400/s
-against a service capacity of ~320/s (≈1.25x offered load). Values are means
+against a service capacity of ~320/s (≈1.25x offered load). The exception is
+`bursty`, which ignores the configured rate: its rows were measured at about
+1.57x, so compare it with the other workloads only in the load sweep. Values are means
 across repetitions; the `reps` column says how many. **These numbers describe
 this machine under this configuration; do not port them elsewhere.**
 
@@ -1287,9 +1317,12 @@ claim.** Deadline miss rate on the heavy-tailed workload:
 Classical theory warns that EDF degrades badly beyond capacity, because it keeps
 preferring tasks that are already doomed and misses them anyway while delaying
 tasks that were still achievable. I asserted that in three places in this
-repository before measuring it. **The data does not support it here.** EDF has
-the lowest miss rate at every load level tested; its advantage narrows from
-about 129x better than FIFO at 1.25x to 1.16x at 3x, but never inverts.
+repository before measuring it. **The data supports only a weaker version of
+it.** EDF has the lowest miss rate of the four policies up to 1.5x and beats
+FIFO at every load tested; its advantage over FIFO narrows from about 117x at
+1.25x to 1.16x at 3x, but never inverts. Beyond 1.5x strict priority misses
+fewer deadlines than EDF (0.508 and 0.683 against 0.635 and 0.769 at 2x and 3x),
+so EDF does lose ground under overload; it does not collapse below FIFO.
 
 The reason is that the classical pathology needs deadlines that are tight
 relative to service time, whereas these deadlines are generous and scale with
@@ -1357,7 +1390,7 @@ load on the heavy-tailed workload:
 | wfq | 0.508 | 3.38 | 0.582 | 255.2 | −6.4% |
 | **edf** | **0.005** | 8.25 | 0.057 | 244.0 | −10.5% |
 
-EDF gives up 10.5% throughput against no scheduler at all and returns a **122x
+EDF gives up 10.5% throughput against no scheduler at all and returns a **118x
 reduction in deadline misses**. WFQ gives up 6.4% and returns tenant isolation:
 per-tenant p95 latency under the 90/3/3/2/2 skew, small tenants relative to the
 dominant one, is 0.978x under `none` and **0.029x under WFQ** — a 32x latency
@@ -1891,9 +1924,11 @@ the run has not been plotted.
 │   ├── schedbench/     the scheduler's own dispatch ceiling
 │   ├── failoverbench/  what a scheduler crash costs
 │   ├── storefaultbench/ what a Redis failover does to the fence
+│   ├── partitionbench/ a scheduler cut off from a Redis that stays up
+│   ├── console/        the live operations console's server
+│   └── tqctl/          live state and dead-letter inspection
 ├── bench/asynq/        external baseline (its own Go module, so Asynq is
 │                       never a dependency of the shipped library)
-│   └── tqctl/          live state and dead-letter inspection
 ├── internal/
 │   ├── broker/         all Redis access, including the atomic Lua scripts
 │   ├── cli/            shared flags, logging and signal handling
@@ -1907,17 +1942,22 @@ the run has not been plotted.
 │   ├── metrics/        Prometheus instrumentation
 │   ├── recovery/       XAUTOCLAIM redelivery, retries and dead-lettering
 │   ├── workload/       reproducible generation and paced submission
+│   ├── netfault/       a TCP proxy that can be cut and healed
+│   ├── hostclock/      detects that the host slept during a measurement
+│   ├── console/        live console: polling, events, demo supervisor, API
 │   └── bench/          experiment runner, statistics, CSV writers
+├── web/                research site and live console frontend (Vite, React)
+│   └── public/data/    exported experiment data the site reads (committed)
 ├── configs/            runnable configurations, fully commented
 ├── experiments/        quick, full and failure-injection profiles
 ├── scripts/            plot_results.py, plot_load_sweep.py, plot_failover.py,
-│                       plot_storefault.py, plot_baseline.py,
-│                       merge_runs.py, kind-up.sh, kind-down.sh
+│                       plot_storefault.py, plot_baseline.py, plot_partition.py,
+│                       export_site_data.py, merge_runs.py, kind-up.sh, kind-down.sh
 ├── deploy/
 │   ├── docker/         multi-stage Dockerfile, Prometheus config
 │   └── kubernetes/     base manifests and a WFQ overlay
 ├── results/            benchmark output (only results/example is committed)
-├── docs/               architecture, experiment methodology, metrics
+├── docs/               report, architecture, experiment methodology, metrics, frontend
 ├── docker-compose.yml
 ├── Makefile
 └── go.mod

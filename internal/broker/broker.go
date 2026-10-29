@@ -785,6 +785,30 @@ func (b *Broker) ReadDeadLetters(ctx context.Context, count int64) ([]domain.Dea
 	return out, nil
 }
 
+// DispatchesSince returns execution-stream entries added at or after since,
+// oldest first, at most count of them. Each carries the dispatch timestamp and
+// the epoch the dispatch script stamped on it, so the stream is a record of
+// who dispatched what and when that does not depend on any scheduler's own
+// account. Stream ids begin with the millisecond they were added, which is
+// what makes a time range cheap. It reads only; acknowledged entries stay in
+// the stream, so this sees completed work too.
+func (b *Broker) DispatchesSince(ctx context.Context, since time.Time, count int64) ([]ExecMessage, error) {
+	start := strconv.FormatInt(since.UnixMilli(), 10) + "-0"
+	msgs, err := b.rdb.XRangeN(ctx, b.keys.Exec, start, "+", count).Result()
+	if err != nil {
+		return nil, fmt.Errorf("read exec stream: %w", err)
+	}
+	out := make([]ExecMessage, 0, len(msgs))
+	for _, msg := range msgs {
+		m, err := parseExecMessage(msg)
+		if err != nil {
+			return out, err
+		}
+		out = append(out, m)
+	}
+	return out, nil
+}
+
 // DeadLetterCount returns the number of dead-lettered tasks.
 func (b *Broker) DeadLetterCount(ctx context.Context) (int64, error) {
 	n, err := b.rdb.XLen(ctx, b.keys.DeadLetter).Result()

@@ -72,6 +72,7 @@ build: ## Build every binary into ./bin
 	$(GO) build -trimpath -o $(BIN)/benchmark ./cmd/benchmark
 	$(GO) build -trimpath -o $(BIN)/tqctl     ./cmd/tqctl
 	$(GO) build -trimpath -o $(BIN)/schedbench ./cmd/schedbench
+	$(GO) build -trimpath -o $(BIN)/console   ./cmd/console
 	@echo "binaries in ./$(BIN)"
 
 .PHONY: tidy
@@ -423,6 +424,33 @@ docs-charts: ## Copy a run's charts into docs/images for the README: make docs-c
 report: bench-quick plots ## Run the quick matrix and then plot it
 
 ## --- Kubernetes (kind) ---
+
+.PHONY: site-data
+site-data: ## Recompute every report claim from results/ and export the research site's JSON
+	python3 scripts/export_site_data.py
+
+.PHONY: web
+web: ## Build the research site and console frontend into web/dist (needs Node 22)
+	cd web && npm ci && npm run build
+
+.PHONY: web-dev
+web-dev: ## Serve the research site with hot reload on http://127.0.0.1:5173
+	cd web && npm run dev
+
+.PHONY: web-test
+web-test: ## Type-check, unit-test and browser-test the frontend
+	cd web && npm run typecheck && npm test && npx playwright test
+
+.PHONY: console-demo
+console-demo: build ## Live console with its own demo cluster and fault injection, on http://127.0.0.1:8088
+	@test -f web/dist/index.html || $(MAKE) --no-print-directory web
+	@$(MAKE) --no-print-directory redis-check
+	./$(BIN)/console --demo --enable-faults --redis-addr $(REDIS_ADDR)
+
+.PHONY: console
+console: build ## Live console watching the Compose stack (read-only), on http://127.0.0.1:8088
+	@test -f web/dist/index.html || $(MAKE) --no-print-directory web
+	./$(BIN)/console --redis-addr $(REDIS_ADDR)
 
 .PHONY: kind-up
 kind-up: ## Create the kind cluster, build and load the image, deploy the stack

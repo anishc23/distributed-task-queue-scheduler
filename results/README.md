@@ -124,3 +124,9 @@ make bench-quick            # 16 experiments, a couple of minutes
 make plots                  # charts for the newest run
 make clean-results          # delete every generated run
 ```
+
+The research site does not read this directory. `make site-data` runs
+`scripts/export_site_data.py`, which recomputes every number the report quotes
+from the runs here, refuses to continue if any disagrees, and writes the
+committed JSON in `web/public/data/` with each source file's SHA-256. See
+[docs/frontend.md](../docs/frontend.md#data-pipeline).

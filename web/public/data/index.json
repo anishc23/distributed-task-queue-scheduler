@@ -1,0 +1,762 @@
+{
+ "claims": [
+  {
+   "claim": "p99 spread across policies at 0.5x, uniform (%)",
+   "computed": 0.1433,
+   "ok": true,
+   "printed": 0.1,
+   "section": "4.4",
+   "tolerance": 0.05
+  },
+  {
+   "claim": "p99 spread across policies at 0.75x, uniform (%)",
+   "computed": 0.256,
+   "ok": true,
+   "printed": 0.3,
+   "section": "4.4",
+   "tolerance": 0.05
+  },
+  {
+   "claim": "p99 spread across policies at 1.0x, uniform (%)",
+   "computed": 93.1188,
+   "ok": true,
+   "printed": 93.1,
+   "section": "4.4",
+   "tolerance": 0.05
+  },
+  {
+   "claim": "p99 spread across policies at 1.25x, uniform (%)",
+   "computed": 55.4691,
+   "ok": true,
+   "printed": 55.5,
+   "section": "4.4",
+   "tolerance": 0.05
+  },
+  {
+   "claim": "p99 spread across policies at 1.5x, uniform (%)",
+   "computed": 28.4229,
+   "ok": true,
+   "printed": 28.4,
+   "section": "4.4",
+   "tolerance": 0.05
+  },
+  {
+   "claim": "p99 spread across policies at 2.0x, uniform (%)",
+   "computed": 2.1291,
+   "ok": true,
+   "printed": 2.1,
+   "section": "4.4",
+   "tolerance": 0.05
+  },
+  {
+   "claim": "p99 spread across policies at 3.0x, uniform (%)",
+   "computed": 1.1211,
+   "ok": true,
+   "printed": 1.1,
+   "section": "4.4",
+   "tolerance": 0.05
+  },
+  {
+   "claim": "EDF advantage over FIFO at 1.25x (x)",
+   "computed": 117.3636,
+   "ok": true,
+   "printed": 117,
+   "section": "4.5",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "EDF advantage over FIFO at 3x (x)",
+   "computed": 1.1614,
+   "ok": true,
+   "printed": 1.16,
+   "section": "4.5",
+   "tolerance": 0.005
+  },
+  {
+   "claim": "EDF misses no more than FIFO at 0.5x (1 = true)",
+   "computed": 1.0,
+   "ok": true,
+   "printed": 1,
+   "section": "4.5",
+   "tolerance": 0
+  },
+  {
+   "claim": "EDF has the lowest miss rate at 0.5x (1 = true)",
+   "computed": 1.0,
+   "ok": true,
+   "printed": 1,
+   "section": "4.5",
+   "tolerance": 0
+  },
+  {
+   "claim": "EDF misses no more than FIFO at 0.75x (1 = true)",
+   "computed": 1.0,
+   "ok": true,
+   "printed": 1,
+   "section": "4.5",
+   "tolerance": 0
+  },
+  {
+   "claim": "EDF has the lowest miss rate at 0.75x (1 = true)",
+   "computed": 1.0,
+   "ok": true,
+   "printed": 1,
+   "section": "4.5",
+   "tolerance": 0
+  },
+  {
+   "claim": "EDF misses no more than FIFO at 1.0x (1 = true)",
+   "computed": 1.0,
+   "ok": true,
+   "printed": 1,
+   "section": "4.5",
+   "tolerance": 0
+  },
+  {
+   "claim": "EDF has the lowest miss rate at 1.0x (1 = true)",
+   "computed": 1.0,
+   "ok": true,
+   "printed": 1,
+   "section": "4.5",
+   "tolerance": 0
+  },
+  {
+   "claim": "EDF misses no more than FIFO at 1.25x (1 = true)",
+   "computed": 1.0,
+   "ok": true,
+   "printed": 1,
+   "section": "4.5",
+   "tolerance": 0
+  },
+  {
+   "claim": "EDF has the lowest miss rate at 1.25x (1 = true)",
+   "computed": 1.0,
+   "ok": true,
+   "printed": 1,
+   "section": "4.5",
+   "tolerance": 0
+  },
+  {
+   "claim": "EDF misses no more than FIFO at 1.5x (1 = true)",
+   "computed": 1.0,
+   "ok": true,
+   "printed": 1,
+   "section": "4.5",
+   "tolerance": 0
+  },
+  {
+   "claim": "EDF has the lowest miss rate at 1.5x (1 = true)",
+   "computed": 1.0,
+   "ok": true,
+   "printed": 1,
+   "section": "4.5",
+   "tolerance": 0
+  },
+  {
+   "claim": "EDF misses no more than FIFO at 2.0x (1 = true)",
+   "computed": 1.0,
+   "ok": true,
+   "printed": 1,
+   "section": "4.5",
+   "tolerance": 0
+  },
+  {
+   "claim": "strict priority beats EDF at 2.0x (1 = true)",
+   "computed": 1.0,
+   "ok": true,
+   "printed": 1,
+   "section": "4.5",
+   "tolerance": 0
+  },
+  {
+   "claim": "EDF misses no more than FIFO at 3.0x (1 = true)",
+   "computed": 1.0,
+   "ok": true,
+   "printed": 1,
+   "section": "4.5",
+   "tolerance": 0
+  },
+  {
+   "claim": "strict priority beats EDF at 3.0x (1 = true)",
+   "computed": 1.0,
+   "ok": true,
+   "printed": 1,
+   "section": "4.5",
+   "tolerance": 0
+  },
+  {
+   "claim": "fifo uniform latency_p99_s",
+   "computed": 2.9166,
+   "ok": true,
+   "printed": 2.917,
+   "section": "4.1",
+   "tolerance": 0.0005
+  },
+  {
+   "claim": "edf heavy_tailed deadline_miss_rate",
+   "computed": 0.0008,
+   "ok": true,
+   "printed": 0.001,
+   "section": "4.1",
+   "tolerance": 0.0005
+  },
+  {
+   "claim": "edf heavy_tailed throughput_tasks_per_s",
+   "computed": 257.5817,
+   "ok": true,
+   "printed": 257.6,
+   "section": "4.1",
+   "tolerance": 0.05
+  },
+  {
+   "claim": "fifo heavy_tailed throughput_tasks_per_s",
+   "computed": 282.741,
+   "ok": true,
+   "printed": 282.7,
+   "section": "4.1",
+   "tolerance": 0.05
+  },
+  {
+   "claim": "wfq multi_tenant deadline_miss_rate",
+   "computed": 0.7267,
+   "ok": true,
+   "printed": 0.727,
+   "section": "4.1",
+   "tolerance": 0.0005
+  },
+  {
+   "claim": "fifo bursty deadline_miss_rate",
+   "computed": 0.9427,
+   "ok": true,
+   "printed": 0.943,
+   "section": "4.1",
+   "tolerance": 0.0005
+  },
+  {
+   "claim": "priority policy, p95 of priority 0 (s)",
+   "computed": 4.4163,
+   "ok": true,
+   "printed": 4.416,
+   "section": "4.2",
+   "tolerance": 0.0005
+  },
+  {
+   "claim": "priority policy, spread between priority 0 and 4 (x)",
+   "computed": 60.3728,
+   "ok": true,
+   "printed": 60.4,
+   "section": "4.2",
+   "tolerance": 0.05
+  },
+  {
+   "claim": "WFQ small-tenant p95 / tenant A p95",
+   "computed": 0.0272,
+   "ok": true,
+   "printed": 0.027,
+   "section": "4.3",
+   "tolerance": 0.0005
+  },
+  {
+   "claim": "WFQ small-tenant p95 (s)",
+   "computed": 0.0777,
+   "ok": true,
+   "printed": 0.078,
+   "section": "4.3",
+   "tolerance": 0.0005
+  },
+  {
+   "claim": "admission, fence inert (tasks/s)",
+   "computed": 15204.4348,
+   "ok": true,
+   "printed": 15204,
+   "section": "4.6",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "end to end, fence inert (tasks/s)",
+   "computed": 11380.914,
+   "ok": true,
+   "printed": 11381,
+   "section": "4.6",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "end to end, fence live (tasks/s)",
+   "computed": 11325.114,
+   "ok": true,
+   "printed": 11325,
+   "section": "4.6",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "dispatch, best case, fence inert (tasks/s)",
+   "computed": 261726.865,
+   "ok": true,
+   "printed": 261727,
+   "section": "4.6",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "FIFO overhead against no scheduler, uniform at 1.25x (%)",
+   "computed": 1.5123,
+   "ok": true,
+   "printed": 1.5,
+   "section": "4.6",
+   "tolerance": 0.05
+  },
+  {
+   "claim": "FIFO overhead against no scheduler, bursty at 1.25x (%)",
+   "computed": 1.6001,
+   "ok": true,
+   "printed": 1.6,
+   "section": "4.6",
+   "tolerance": 0.05
+  },
+  {
+   "claim": "FIFO overhead against no scheduler, heavy_tailed at 1.25x (%)",
+   "computed": 1.2286,
+   "ok": true,
+   "printed": 1.2,
+   "section": "4.6",
+   "tolerance": 0.05
+  },
+  {
+   "claim": "FIFO overhead against no scheduler, multi_tenant at 1.25x (%)",
+   "computed": 1.5782,
+   "ok": true,
+   "printed": 1.6,
+   "section": "4.6",
+   "tolerance": 0.05
+  },
+  {
+   "claim": "EDF reduction in deadline misses against no scheduler (x)",
+   "computed": 117.7742,
+   "ok": true,
+   "printed": 118,
+   "section": "4.6",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "median outage, graceful arm (ms)",
+   "computed": 663.0,
+   "ok": true,
+   "printed": 663,
+   "section": "4.7",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "median outage, crash arm (ms)",
+   "computed": 4362.0,
+   "ok": true,
+   "printed": 4362,
+   "section": "4.7",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "median outage, pause arm (ms)",
+   "computed": 3879.0,
+   "ok": true,
+   "printed": 3879,
+   "section": "4.7",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "single-replica trials that recovered",
+   "computed": 0,
+   "ok": true,
+   "printed": 0,
+   "section": "4.7",
+   "tolerance": 0
+  },
+  {
+   "claim": "tasks never finished, single arm",
+   "computed": 37866,
+   "ok": true,
+   "printed": 37866,
+   "section": "4.7",
+   "tolerance": 0
+  },
+  {
+   "claim": "epoch inversions across all failover trials",
+   "computed": 0,
+   "ok": true,
+   "printed": 0,
+   "section": "4.7",
+   "tolerance": 0
+  },
+  {
+   "claim": "median outage, crash at 2 s TTL (ms)",
+   "computed": 1849.5,
+   "ok": true,
+   "printed": 1850,
+   "section": "4.7",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "median outage, crash at 10 s TTL (ms)",
+   "computed": 8259.0,
+   "ok": true,
+   "printed": 8259,
+   "section": "4.7",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "pause trials refused by the fence",
+   "computed": 11,
+   "ok": true,
+   "printed": 11,
+   "section": "4.8",
+   "tolerance": 0
+  },
+  {
+   "claim": "clean: trials issuing one token to two leaders",
+   "computed": 0,
+   "ok": true,
+   "printed": 0,
+   "section": "4.9",
+   "tolerance": 0
+  },
+  {
+   "claim": "clean: acknowledged tasks destroyed",
+   "computed": 0,
+   "ok": true,
+   "printed": 0,
+   "section": "4.9",
+   "tolerance": 0
+  },
+  {
+   "claim": "lagging: trials issuing one token to two leaders",
+   "computed": 10,
+   "ok": true,
+   "printed": 10,
+   "section": "4.9",
+   "tolerance": 0
+  },
+  {
+   "claim": "lagging: acknowledged tasks destroyed",
+   "computed": 10010,
+   "ok": true,
+   "printed": 10010,
+   "section": "4.9",
+   "tolerance": 0
+  },
+  {
+   "claim": "epochwait: trials issuing one token to two leaders",
+   "computed": 10,
+   "ok": true,
+   "printed": 10,
+   "section": "4.9",
+   "tolerance": 0
+  },
+  {
+   "claim": "epochwait: acknowledged tasks destroyed",
+   "computed": 10009,
+   "ok": true,
+   "printed": 10009,
+   "section": "4.9",
+   "tolerance": 0
+  },
+  {
+   "claim": "guarded: trials issuing one token to two leaders",
+   "computed": 0,
+   "ok": true,
+   "printed": 0,
+   "section": "4.9",
+   "tolerance": 0
+  },
+  {
+   "claim": "guarded: acknowledged tasks destroyed",
+   "computed": 0,
+   "ok": true,
+   "printed": 0,
+   "section": "4.9",
+   "tolerance": 0
+  },
+  {
+   "claim": "this queue, median throughput at 0 ms (tasks/s)",
+   "computed": 8075.4,
+   "ok": true,
+   "printed": 8075.4,
+   "section": "4.10",
+   "tolerance": 0.05
+  },
+  {
+   "claim": "Asynq, median throughput at 0 ms (tasks/s)",
+   "computed": 12477.7,
+   "ok": true,
+   "printed": 12477.7,
+   "section": "4.10",
+   "tolerance": 0.05
+  },
+  {
+   "claim": "this queue, median throughput at 2 ms (tasks/s)",
+   "computed": 8611.4,
+   "ok": true,
+   "printed": 8611.4,
+   "section": "4.10",
+   "tolerance": 0.05
+  },
+  {
+   "claim": "Asynq, median throughput at 2 ms (tasks/s)",
+   "computed": 12181.4,
+   "ok": true,
+   "printed": 12181.4,
+   "section": "4.10",
+   "tolerance": 0.05
+  },
+  {
+   "claim": "this queue, median throughput at 5 ms (tasks/s)",
+   "computed": 5809.5,
+   "ok": true,
+   "printed": 5809.5,
+   "section": "4.10",
+   "tolerance": 0.05
+  },
+  {
+   "claim": "Asynq, median throughput at 5 ms (tasks/s)",
+   "computed": 5522.2,
+   "ok": true,
+   "printed": 5522.2,
+   "section": "4.10",
+   "tolerance": 0.05
+  },
+  {
+   "claim": "this queue, median throughput at 20 ms (tasks/s)",
+   "computed": 1492.1,
+   "ok": true,
+   "printed": 1492.1,
+   "section": "4.10",
+   "tolerance": 0.05
+  },
+  {
+   "claim": "Asynq, median throughput at 20 ms (tasks/s)",
+   "computed": 1465.4,
+   "ok": true,
+   "printed": 1465.4,
+   "section": "4.10",
+   "tolerance": 0.05
+  },
+  {
+   "claim": "EDF deadline miss rate, sleep",
+   "computed": 0.0985,
+   "ok": true,
+   "printed": 0.099,
+   "section": "5.3",
+   "tolerance": 0.0005
+  },
+  {
+   "claim": "EDF deadline miss rate, cpu",
+   "computed": 0.829,
+   "ok": true,
+   "printed": 0.829,
+   "section": "5.3",
+   "tolerance": 0.0005
+  },
+  {
+   "claim": "priority deadline miss rate, cpu",
+   "computed": 0.6432,
+   "ok": true,
+   "printed": 0.643,
+   "section": "5.3",
+   "tolerance": 0.0005
+  },
+  {
+   "claim": "WFQ small-tenant advantage over FIFO, sleep (x)",
+   "computed": 31.8411,
+   "ok": true,
+   "printed": 31.8,
+   "section": "5.3",
+   "tolerance": 0.05
+  },
+  {
+   "claim": "WFQ small-tenant advantage over FIFO, cpu (x)",
+   "computed": 39.9029,
+   "ok": true,
+   "printed": 39.9,
+   "section": "5.3",
+   "tolerance": 0.05
+  },
+  {
+   "claim": "total experiments",
+   "computed": 1463,
+   "ok": true,
+   "printed": 1463,
+   "section": "B",
+   "tolerance": 0
+  },
+  {
+   "claim": "total tasks",
+   "computed": 5436000,
+   "ok": true,
+   "printed": 5436000,
+   "section": "B",
+   "tolerance": 0
+  }
+ ],
+ "datasets": [
+  {
+   "bytes": 150149,
+   "file": "matrix.json",
+   "id": "matrix",
+   "report_section": "4.1",
+   "rows": 400,
+   "title": "Main matrix: four policies by four workloads, 25 repetitions"
+  },
+  {
+   "bytes": 83137,
+   "file": "sweep.json",
+   "id": "sweep",
+   "report_section": "4.4",
+   "rows": 336,
+   "title": "Offered-load sweep: seven loads from 0.5x to 3x capacity"
+  },
+  {
+   "bytes": 46664,
+   "file": "control.json",
+   "id": "control",
+   "report_section": "4.6",
+   "rows": 240,
+   "title": "No-scheduler control arm against every policy"
+  },
+  {
+   "bytes": 2139,
+   "file": "priority.json",
+   "id": "priority",
+   "report_section": "4.2",
+   "rows": 20,
+   "title": "p95 latency by priority level, uniform workload, pooled over 25 repetitions"
+  },
+  {
+   "bytes": 97357,
+   "file": "tenants.json",
+   "id": "tenants",
+   "report_section": "4.3, 5.3",
+   "rows": 700,
+   "title": "Per-tenant p95 latency under a 90/3/3/2/2 tenant skew"
+  },
+  {
+   "bytes": 32412,
+   "file": "realwork.json",
+   "id": "realwork",
+   "report_section": "5.3",
+   "rows": 200,
+   "title": "Simulated (sleep) against real CPU execution, heavy-tailed workload"
+  },
+  {
+   "bytes": 7764,
+   "file": "ceiling.json",
+   "id": "ceiling",
+   "report_section": "4.6",
+   "rows": 64,
+   "title": "The scheduler's own throughput ceiling, fence inert and live"
+  },
+  {
+   "bytes": 37874,
+   "file": "failover.json",
+   "id": "failover",
+   "report_section": "4.7, 4.8",
+   "rows": 99,
+   "title": "Dispatch outage when the leading scheduler is stopped"
+  },
+  {
+   "bytes": 10925,
+   "file": "storefault.json",
+   "id": "storefault",
+   "report_section": "4.9",
+   "rows": 40,
+   "title": "What a Redis Sentinel failover does to the fencing token"
+  },
+  {
+   "bytes": 9208,
+   "file": "baseline.json",
+   "id": "baseline",
+   "report_section": "4.10",
+   "rows": 60,
+   "title": "This queue against Asynq on identical work"
+  }
+ ],
+ "generated_by": "scripts/export_site_data.py",
+ "inventory": {
+  "id": "inventory",
+  "report_section": "Appendix B",
+  "rows": [
+   {
+    "experiments": 400,
+    "name": "Main matrix, 25 repetitions",
+    "runs": "final-25rep",
+    "tasks": 1600000
+   },
+   {
+    "experiments": 336,
+    "name": "Offered-load sweep",
+    "runs": "sweep-loads",
+    "tasks": 1344000
+   },
+   {
+    "experiments": 240,
+    "name": "No-scheduler control",
+    "runs": "control-arm",
+    "tasks": 960000
+   },
+   {
+    "experiments": 200,
+    "name": "Real work, heavy-tailed, 25 reps",
+    "runs": "rw-heavy25-sleep, rw-heavy25-cpu",
+    "tasks": 400000
+   },
+   {
+    "experiments": 48,
+    "name": "Real work, initial comparison",
+    "runs": "realwork-sleep, realwork-cpu",
+    "tasks": 96000
+   },
+   {
+    "experiments": 40,
+    "name": "Real work, tenant isolation",
+    "runs": "rw-tenant-sleep, rw-tenant-cpu",
+    "tasks": 80000
+   },
+   {
+    "experiments": 75,
+    "name": "Scheduler failover, five arms",
+    "runs": "failover",
+    "tasks": 300000
+   },
+   {
+    "experiments": 24,
+    "name": "Failover, lease-TTL sensitivity",
+    "runs": "failover-ttl2s, failover-ttl10s",
+    "tasks": 96000
+   },
+   {
+    "experiments": 40,
+    "name": "Store failure under Sentinel, four arms",
+    "runs": "storefault",
+    "tasks": 80000
+   },
+   {
+    "experiments": 60,
+    "name": "External baseline against Asynq",
+    "runs": "baseline",
+    "tasks": 480000
+   }
+  ],
+  "title": "Every experiment counted, from the data",
+  "total_experiments": 1463,
+  "total_tasks": 5436000
+ },
+ "pending": [
+  {
+   "commands": [
+    "make partition PARTITION_REPETITIONS=12",
+    "make partition-sweep RUN=partition-sweep"
+   ],
+   "harness": "cmd/partitionbench",
+   "id": "partition",
+   "reason": "The harness is written and tested. A first named-arm run exists but predates the host-sleep detection added to the harness, and the partition-length sweep was interrupted twice by the laptop sleeping on battery power. Neither is published; both are to be re-run on mains power.",
+   "status": "pending",
+   "title": "A scheduler partitioned from a Redis that stays up"
+  }
+ ],
+ "schema_version": 1
+}

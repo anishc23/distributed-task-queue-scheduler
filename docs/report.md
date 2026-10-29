@@ -14,7 +14,7 @@ priority, earliest deadline first (EDF) and weighted fair queuing (WFQ) — were
 compared across four synthetic workloads, seven levels of offered load, and two
 models of task execution.
 
-The study comprises **1,463 experiments over 5.47 million tasks**. Four results
+The study comprises **1,463 experiments over 5.44 million tasks**. Four results
 are reported. First, scheduling policy is decisive only in a narrow band around
 service capacity: the spread between the best and worst policy's 99th-percentile
 latency is 0.1% at half capacity, peaks at 93% at capacity, and falls to 1.1% at
@@ -284,8 +284,15 @@ mechanism under test is a failure of the harness, not of the run.
 
 ### 4.1 Main matrix
 
-Twenty-five repetitions per cell at 1.25× offered load, 400 experiments,
-1.6 million tasks. Latency and wait columns are seconds.
+Twenty-five repetitions per cell, 400 experiments, 1.6 million tasks. Latency
+and wait columns are seconds. Arrivals were configured at 400 tasks/s, which is
+1.25× capacity for uniform and multi-tenant and about 1.28× for heavy-tailed.
+**The four bursty rows were not run at that load.** The bursty workload ignores
+the configured rate (Section 3.2), and these rows were measured at about 1.57×
+capacity. They are kept because they are what was measured, but they are not
+load-matched to the other twelve, and the bursty-against-uniform gap in this
+table is mostly that difference in load. Section 4.4's sweep, which derives each
+workload's rate from measured capacity, is the load-controlled comparison.
 
 | workload | sched | p50 | p99 | maxwait | miss | tasks/s | Jain |
 | :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -384,8 +391,8 @@ that policy does not matter.
 An earlier revision of this work asserted in three places that EDF "degrades
 sharply under overload", following classical theory, which warns that EDF keeps
 preferring already-doomed tasks and misses them anyway while delaying tasks that
-were still achievable. **The data does not support that here.** Deadline miss
-rate on the heavy-tailed workload:
+were still achievable. **The data supports a weaker version of that than was
+asserted.** Deadline miss rate on the heavy-tailed workload:
 
 | offered load | 0.50× | 1.00× | 1.25× | 1.50× | 2.00× | 3.00× |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -394,12 +401,17 @@ rate on the heavy-tailed workload:
 | **edf** | 0.000 | **0.000** | **0.005** | **0.368** | **0.635** | **0.769** |
 | wfq | 0.000 | 0.088 | 0.507 | 0.690 | 0.798 | 0.864 |
 
-EDF has the lowest miss rate at every load tested; its advantage narrows from
-roughly 129× better than FIFO at 1.25× to 1.16× at 3×, but never inverts. The
-classical pathology requires deadlines that are tight relative to service time,
-whereas these are generous and scale with each task's own duration, so a
-deferred long task usually still meets its deadline. The result is therefore a
-property of the workload as much as of the policy.
+EDF has the lowest miss rate of the four policies at every load up to 1.5×,
+and beats FIFO at every load tested: its advantage over FIFO narrows from
+roughly 117× at 1.25× to 1.16× at 3×, but never inverts. It is not the best
+policy beyond 1.5×. At 2× and 3× strict priority misses fewer deadlines — 0.508
+and 0.683 against EDF's 0.635 and 0.769 — so EDF does lose ground under
+overload, as theory warns. What it does not do here is collapse below the
+baseline that reads no task metadata at all. The classical pathology in its
+sharp form requires deadlines that are tight relative to service time, whereas
+these are generous and scale with each task's own duration, so a deferred long
+task usually still meets its deadline. The result is therefore a property of the
+workload as much as of the policy.
 
 What EDF does pay, at every load, is starvation: its longest queue wait is three
 to four times FIFO's and saturates near 9.6 s, because it defers precisely the
@@ -471,7 +483,7 @@ considerably more and returns considerably more (heavy-tailed, 1.25×):
 | wfq | 0.508 | 3.38 | 255.2 | −6.4% |
 | **edf** | **0.005** | 8.25 | 244.0 | −10.5% |
 
-EDF trades 10.5% throughput for a 122× reduction in deadline misses; WFQ trades
+EDF trades 10.5% throughput for a 118× reduction in deadline misses; WFQ trades
 6.4% for tenant isolation. **FIFO is the one arm that fails to justify itself**:
 it costs 1.2% and delivers identical ordering, so it is strictly worse than
 having no scheduler. FIFO earns its place here as an experimental baseline, not
@@ -728,7 +740,7 @@ dies**, aborting the trial otherwise. A fault-injection experiment that does not
 confirm the fault survived to the moment it mattered can pass while testing
 nothing.
 
-**Results** (10 trials per arm, 3,000 tasks each, 2 s lease):
+**Results** (10 trials per arm, 2,000 tasks each, 2 s lease):
 
 | arm | one token, two leaders | acknowledged tasks destroyed | submissions accepted | completed |
 | --- | ---: | ---: | ---: | ---: |
@@ -879,7 +891,9 @@ carefully, on one machine.
 ### 5.1 Corrections made during this study
 
 Three quantitative claims were found to be wrong after more data was collected,
-and two defects were found by the failover experiment rather than by review.
+two defects were found by the failover experiment rather than by review, and
+four documentation errors were found later by recomputing every number this
+report quotes from the raw data.
 
 **The bursty load confound** (Section 3.2): bursty experiments ran at 1.57×
 capacity while others sat at 1.25×, because the workload ignores its nominal
@@ -887,7 +901,8 @@ arrival-rate parameter. Corrected by deriving arrival rate per workload from
 measured capacity.
 
 **EDF's overload behaviour** (Section 4.5): asserted from theory in three places
-before measurement, and contradicted by the sweep.
+before measurement, and contradicted by the sweep. That correction itself
+overreached, and is corrected again below.
 
 **EDF's real-work degradation** (Section 5.3): first reported as 27× from three
 repetitions on the one workload already shown to require twenty-five. At n=25
@@ -918,6 +933,32 @@ regression test that runs three consecutive self-ending terms reproduces it
 
 Both are worth reporting for the same reason as the quantitative corrections:
 the experiment earned its place by finding them, not only by producing a number.
+
+**Four errors found by recomputing the report from its data** (October 2026).
+`scripts/export_site_data.py`, written to feed the project's results site,
+recomputes the numbers quoted here from the raw CSVs and refuses to publish if
+any disagree. Its first run found four errors that review had not:
+
+1. *The bursty rows of the main matrix were not at 1.25× load.* Section 3.2
+   identified the bursty confound and the load sweep corrected it, but the
+   25-repetition main matrix was never re-run, and Section 4.1 described all
+   sixteen of its cells as 1.25×. Its bursty rows are at about 1.57×; Section
+   4.1 now says so.
+2. *EDF was not the best policy at every load.* Section 4.5 claimed the lowest
+   miss rate "at every load tested" beside a table showing strict priority lower
+   at 2× and 3×. The correct statement is narrower: best up to 1.5×, and better
+   than FIFO everywhere.
+3. *Two ratios were computed from rounded values.* "122×" (Section 4.6) and
+   "129×" (Section 4.5) divide a miss rate printed as 0.005 into another; the
+   unrounded rates give 118× and 117×. Rounding a small denominator to one
+   significant figure moves the quotient by several per cent.
+4. *The store-failure experiment used 2,000 tasks per trial, not 3,000.* The
+   harness default is 2,000 and every clean trial shows it submitted that many;
+   the stated figure was wrong, and with it Appendix B's task total, which falls
+   from 5,476,000 to 5,436,000.
+
+None of the four changes a conclusion's direction. All four are the kind of
+error a hand-copied number accumulates and a recomputed one cannot.
 
 ### 5.2 Simulated execution
 
@@ -1022,7 +1063,7 @@ that policy is irrelevant.
 
 **Centralised scheduling is cheap; using it is not, and it is worth it.**
 Centralisation costs about 1.5% of throughput. Acting on it costs 6–10% and
-returns a 122× reduction in deadline misses (EDF) or 35× lower latency for small
+returns a 118× reduction in deadline misses (EDF) or 35× lower latency for small
 tenants (WFQ). FIFO alone does not repay its own overhead.
 
 **Availability is the other half of the centralisation argument, and it is
@@ -1154,9 +1195,9 @@ Source, configurations and full result schemas:
 | Real work, tenant isolation | 40 | 80,000 |
 | Scheduler failover, five arms | 75 | 300,000 |
 | Failover, lease-TTL sensitivity | 24 | 96,000 |
-| Store failure under Sentinel, four arms | 40 | 120,000 |
+| Store failure under Sentinel, four arms | 40 | 80,000 |
 | External baseline against Asynq | 60 | 480,000 |
-| **Total** | **1,463** | **5,476,000** |
+| **Total** | **1,463** | **5,436,000** |
 
 Failover rows count tasks *submitted*: the single-replica control arm leaves a
 median of 2,613 per trial permanently unscheduled, which is the result rather
