@@ -165,7 +165,7 @@ All responses are JSON. Reads need only the right `Host` header; writes need eve
 | `GET /api/v1/status` | `console` (mode, server time, poll interval, faults on/off) and the latest `snapshot` |
 | `GET /api/v1/history` | the last 600 samples (10 min at 1 s): queue depth, rates, lease holder, leader count |
 | `GET /api/v1/events?since=<seq>` | events after a sequence number, each tagged with its source |
-| `GET /api/v1/dispatches?window_s=90` | the dispatch log over a window (10–300 s): 250 ms buckets by epoch, longest gap, epoch inversions |
+| `GET /api/v1/dispatches?window_s=90` | the dispatch log over a window (10–300 s): 250 ms buckets by epoch, every gap of 1 s or more, the longest gap, epoch inversions |
 | `GET /api/v1/dlq?limit=50` | dead-letter metadata: task id, tenant, attempts, reason, time. Never the payload |
 | `GET /api/v1/controls` | whether faults are on and why not, allowed actions per role, process states, workload presets |
 | `POST /api/v1/faults` | `{"action": "kill" \| "terminate" \| "freeze" \| "partition" \| "restart", "target": "leader" \| "<name>", "duration_ms": 1000–30000}` |
@@ -182,11 +182,13 @@ JSON; 421 for a foreign `Host`; 502 when Redis could not be read.
 | figure | source | when unavailable |
 | --- | --- | --- |
 | pending, in flight, dead-lettered, oldest wait | Redis, via the same broker calls as `tqctl status` | "—", and a Redis-unreachable notice |
+| not yet admitted | ingress entries the scheduler group has not read, counted directly (up to 10,000), plus those read but not acknowledged. While no scheduler leads this is where new work piles up; the pending set does not move | "—" |
 | dispatched/s, completed/s | difference between two consecutive readings of the Redis counters `dispatched` and `completed`, over the measured interval | "—" on the first sample, after a failed read, or after a counter reset |
 | lease holder, epoch, lease expiry, fence | Redis keys `leader`, `leader_epoch`, `fence` | "unknown" |
 | schedulers claiming to lead | sum of `tq_scheduler_is_leader` over schedulers | "unknown" if any scheduler could not be scraped. A process the supervisor saw exit counts as 0; a frozen one does not, because it may still believe it leads |
 | health | `/healthz` and `/readyz` status codes (see below) | — |
 | dispatch log | the execution stream itself: every entry's stamped `dispatched_at_ms` and `epoch` | an error in place of the chart |
+| stall or idle | a gap of 1 s or more in the dispatch log is a *stall* if a sample taken during it shows work waiting (pending or not yet admitted), *idle* if every sample shows nothing waiting, and *unknown* if no sample fell inside it or Redis was unreadable. Only stalls count towards "longest stall" | "unknown", never assumed |
 
 Health follows the endpoints' own semantics (`internal/metrics`):
 
@@ -273,10 +275,25 @@ The live page has this walkthrough built in; the research section each step corr
 
 A demo run is one observation on one machine. The measured distributions are on the research page.
 
+#### Recording it
+
+`make demo-video` records this walkthrough unattended, against a real demo cluster, into
+`web/demo-video/demo.mp4` (macOS only). `web/scripts/record-demo.mjs` starts the console on its own port, drives
+the page as a person would, and captures Chrome's own screencast. `web/scripts/encode-frames.swift` encodes the
+capture to H.264 with AVFoundation; Playwright's bundled encoder is unsigned and will not run on recent macOS.
+
+Every step waits for the system to reach the state its caption describes before going on: the new leader's own
+"became scheduler leader" line, a stop confirmed from the OS process table, a fence refusal or a lost lease. If it
+never arrives, the recording aborts rather than show something that did not happen. After a freeze or a partition,
+the narration says whichever safe outcome actually occurred: the fence refused the stale write, or the process's
+own lease renewal noticed first. Figures in captions, such as the dispatch gap and the inversion count, are read
+from the page when they are shown. Captions sit in a bar labelled "narration", so they are visibly not part of the
+interface.
+
 ## Tests
 
 ```bash
-cd web && npm run typecheck && npm test        # 41 unit tests: schemas, real datasets, stats, connection rules
+cd web && npm run typecheck && npm test        # 47 unit tests: schemas, real datasets, stats, connection and gap rules
 cd web && npx playwright test                  # 24 browser tests against the production build, in local Chrome
 go test ./internal/console/                    # console unit tests: classification, parsing, events, guards
 TQ_TEST_REDIS_ADDR=localhost:6379 go test -tags integration ./internal/console/ ./internal/broker/

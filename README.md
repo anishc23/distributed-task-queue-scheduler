@@ -52,6 +52,7 @@ policies, compared carefully under controlled conditions.
 make web            # build the site into web/dist (Node 22)
 make web-dev        # research site with hot reload on http://127.0.0.1:5173
 make console-demo   # live console + demo cluster; open the URL it prints
+make demo-video     # record that walkthrough, unattended, against a real cluster (macOS)
 ```
 
 Data pipeline, schema, API, security model and a ten-minute demo script: [docs/frontend.md](docs/frontend.md).
@@ -2046,7 +2047,7 @@ make verify             # format, vet, unit, integration
 make cover-all          # combined statement coverage over internal/
 ```
 
-Combined unit and integration coverage of `internal/` is **78.2%** of
+Combined unit and integration coverage of `internal/` is **82.8%** of
 statements. The remainder is mostly process assembly that only runs in a real
 deployment: dialling Redis, `SignalContext`, `Fail`, and the Sentinel discovery
 path, which needs a Sentinel cluster and is exercised by the store-failure

@@ -451,6 +451,12 @@ console-demo: build ## Live console with its own demo cluster and fault injectio
 	@$(MAKE) --no-print-directory redis-check
 	./$(BIN)/console --demo --enable-faults --redis-addr $(REDIS_ADDR)
 
+.PHONY: demo-video
+demo-video: build ## Record the live-console walkthrough against a real demo cluster into web/demo-video/demo.mp4 (macOS)
+	@test -f web/dist/index.html || $(MAKE) --no-print-directory web
+	@$(MAKE) --no-print-directory redis-check
+	node web/scripts/record-demo.mjs --redis $(REDIS_ADDR)
+
 .PHONY: console
 console: build ## Live console watching the Compose stack (read-only), on http://127.0.0.1:8088
 	@test -f web/dist/index.html || $(MAKE) --no-print-directory web
