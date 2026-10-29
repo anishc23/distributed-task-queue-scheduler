@@ -7,6 +7,9 @@ controlled workloads.
 
 Go 1.23+ · Redis 7+ Streams · Prometheus · Docker Compose · kind · Python analysis
 
+**[Interactive results](https://anishc23.github.io/distributed-task-queue-scheduler/)** · [Report (PDF)](docs/report.pdf) ·
+[How the site and console work](docs/frontend.md)
+
 ---
 
 ## The research question
@@ -33,7 +36,7 @@ policies, compared carefully under controlled conditions.
 
 `web/` holds one frontend with two modes. They never share a data source.
 
-- **Research** is an interactive version of the report: architecture, method, and every result, with selectors over
+- **[Research](https://anishc23.github.io/distributed-task-queue-scheduler/)** is an interactive version of the report: architecture, method, and every result, with selectors over
   the real experiment data. Each chart names the CSV files it came from, with their SHA-256 digests, and the
   command that produced them. It is a static site; it needs nothing running.
   `scripts/export_site_data.py` produces its data from `results/` and refuses to export unless all 74 numbers the

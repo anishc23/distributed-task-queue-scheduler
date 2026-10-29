@@ -10,7 +10,9 @@
 title: "An Empirical Comparison of Scheduling Policies in a Distributed Task Queue"
 subtitle: "Latency, deadline compliance, fairness and starvation under controlled load"
 author: "Anish Choudhury"
-date: "September 2026"
+# The PDF has no other place for the site above the fold, so it rides on the
+# date line, which the title page prints under the author.
+date: "September 2026 · interactive results: anishc23.github.io/distributed-task-queue-scheduler"
 geometry: margin=2.5cm
 fontsize: 11pt
 colorlinks: true

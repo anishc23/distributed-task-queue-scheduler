@@ -2,7 +2,7 @@
 
 *Latency, deadline compliance, fairness and starvation under controlled load*
 
-Anish Choudhury — September 2026 · [source](https://github.com/anishc23/distributed-task-queue-scheduler) · [PDF](report.pdf)
+Anish Choudhury — September 2026 · [interactive results](https://anishc23.github.io/distributed-task-queue-scheduler/) · [source](https://github.com/anishc23/distributed-task-queue-scheduler) · [PDF](report.pdf)
 
 ## Abstract
 
@@ -1349,6 +1349,9 @@ way.
 
 Source, configurations and full result schemas:
 <https://github.com/anishc23/distributed-task-queue-scheduler>
+
+Every result in this report, as interactive charts that name the files they
+were computed from: <https://anishc23.github.io/distributed-task-queue-scheduler/>
 
 ## Appendix B: Experiment inventory
 

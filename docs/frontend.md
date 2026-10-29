@@ -109,7 +109,7 @@ step.
 
 1. On GitHub: **Settings → Pages → Build and deployment → Source: GitHub Actions** (one time).
 2. **Actions → Publish research site → Run workflow.**
-3. The site appears at `https://<user>.github.io/<repository>/`.
+3. The site appears at `https://<user>.github.io/<repository>/`; this repository's is <https://anishc23.github.io/distributed-task-queue-scheduler/>.
 
 Any other static host works too: `BASE=/sub/path/ npm run build` sets the path prefix, and `web/dist` is the whole
 site. The research site never contacts the console, Redis or any other service.
