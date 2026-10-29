@@ -71,10 +71,14 @@ export function Overview() {
               <strong>A lease alone does not keep one writer.</strong> A leader frozen past its lease and then resumed
               reached Redis with a write before its own lease logic noticed, in 11 of 15 trials; the epoch check inside
               the write refused it. With that check removed, a deterministic test dispatched 172 of 400 tasks under a
-              dead term.
+              dead term. Cut off from a Redis that stays up instead, a leader kept its role through any partition
+              shorter than its lease and lost it beyond. Coming back, it was refused by the fence in 11 of 12 trials,
+              and across seven partition lengths the outage grew only until the lease ran out, then stayed inside a
+              crash's window.
             </p>
             <p className="evidence muted">
-              <a href="#fencing">Gray-failure experiment</a> · real <code>SIGSTOP</code>/<code>SIGCONT</code>
+              <a href="#fencing">Gray-failure experiment</a> · real <code>SIGSTOP</code>/<code>SIGCONT</code> ·{" "}
+              <a href="#partition">partition experiment</a> · 104 trials
             </p>
           </div>
         </li>
