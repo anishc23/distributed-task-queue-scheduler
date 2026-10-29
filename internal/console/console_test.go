@@ -188,6 +188,9 @@ func TestSummariseDispatchesMeasuresGapsAndInversions(t *testing.T) {
 	if w.Truncated {
 		t.Error("a read under the cap was marked truncated")
 	}
+	if len(w.Gaps) != 1 || w.Gaps[0] != (DispatchGap{StartMS: 10_200, EndMS: 14_500}) {
+		t.Errorf("gaps = %+v, want only the 4.3 s one: shorter gaps are not listed", w.Gaps)
+	}
 }
 
 func deref(p *int64) any {

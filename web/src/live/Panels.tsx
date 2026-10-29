@@ -84,7 +84,11 @@ export function Kpis({ snap }: { snap: Snapshot }) {
         </div>
       )}
       <dl className="kpis">
-        <Kpi label="pending" value={q ? fmtInt(q.pending) : "—"} note="in the scheduler's pending set" />
+        <Kpi
+          label="pending"
+          value={q ? fmtInt(q.pending) : "—"}
+          note={q ? `ranked; +${fmtInt(q.not_admitted)}${q.not_admitted_capped ? "+" : ""} submitted, not yet admitted` : undefined}
+        />
         <Kpi label="in flight" value={q ? fmtInt(q.in_flight) : "—"} note="dispatched, not finished" />
         <Kpi label="dispatched" value={fmt(r.dispatched_per_s ?? null, 0)} unit="/s" note="from Redis counters" />
         <Kpi label="completed" value={fmt(r.completed_per_s ?? null, 0)} unit="/s" note="from Redis counters" />

@@ -146,9 +146,18 @@ func TestDemoReportsAKilledLeaderAndItsSuccessor(t *testing.T) {
 	if _, err := d.sup.Apply(FaultRequest{Action: ActionKill, Target: "leader"}, d.con.LeaseOwner()); err != nil {
 		t.Fatal(err)
 	}
+	// While nothing leads, nothing is admitted: submitted work has to show up
+	// as not yet admitted, or the outage would look like an idle queue.
+	var queuedUnadmitted int64
 	after := d.waitFor(t, "a different scheduler to take the lease", 10*time.Second, func(s *Snapshot) bool {
+		if s.Queue != nil && s.Queue.NotAdmitted > queuedUnadmitted {
+			queuedUnadmitted = s.Queue.NotAdmitted
+		}
 		return s.Redis.OK && s.Leadership.Held && s.Leadership.Owner != victim
 	})
+	if queuedUnadmitted == 0 {
+		t.Error("no work was ever reported as not yet admitted during the outage")
+	}
 	if after.Leadership.Epoch <= first.Leadership.Epoch {
 		t.Errorf("successor epoch %d is not above %d", after.Leadership.Epoch, first.Leadership.Epoch)
 	}

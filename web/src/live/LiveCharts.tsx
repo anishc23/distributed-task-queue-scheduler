@@ -2,6 +2,7 @@ import { Chart } from "../components/Chart";
 import { Plot, frame, GRID } from "../lib/plot";
 import { fmtInt, fmtMs } from "../lib/format";
 import type { DispatchWindow, Sample } from "./api";
+import { classifyGaps } from "./gaps";
 
 // One colour per epoch, cycled. Epochs are terms, not policies, so they do not
 // reuse the policy palette.
@@ -33,8 +34,10 @@ export function HistoryCharts({ samples }: { samples: Sample[] }) {
   const depthRows = pts.flatMap((s) => [
     { t: s.t, series: "pending", v: s.pending },
     { t: s.t, series: "in flight", v: s.in_flight },
+    { t: s.t, series: "not yet admitted", v: s.not_admitted ?? null },
   ]);
-  const series = (name: string) => (name === "dispatched" || name === "pending" ? "var(--ink)" : "#9a6b1f");
+  const series = (name: string) =>
+    name === "dispatched" || name === "pending" ? "var(--ink)" : name === "not yet admitted" ? "var(--bad)" : "#9a6b1f";
   const empty = pts.length < 2;
 
   const band = (w: number, h: number, rows: { t: Date; series: string; v: number | null }[], label: string) =>
@@ -86,6 +89,7 @@ export function HistoryCharts({ samples }: { samples: Sample[] }) {
             <div className="legend" style={{ padding: 0 }}>
               <span><i className="swatch" style={{ background: "var(--ink)" }} /> pending</span>
               <span><i className="swatch" style={{ background: "#9a6b1f" }} /> in flight</span>
+              <span><i className="swatch" style={{ background: "var(--bad)" }} /> not yet admitted</span>
             </div>
             <Chart label="Pending and in-flight tasks over the last five minutes, shaded by lease holder" deps={[samples]} height={210} build={(w) => band(w, 210, depthRows, "tasks")} />
           </div>
@@ -100,7 +104,7 @@ export function HistoryCharts({ samples }: { samples: Sample[] }) {
   );
 }
 
-export function DispatchLog({ window: w, pending }: { window: DispatchWindow | null; pending: number | null }) {
+export function DispatchLog({ window: w, waiting, samples }: { window: DispatchWindow | null; waiting: number | null; samples: Sample[] }) {
   if (!w) {
     return (
       <section className="panel">
@@ -110,8 +114,9 @@ export function DispatchLog({ window: w, pending }: { window: DispatchWindow | n
     );
   }
   const buckets = w.buckets.map((b) => ({ ...b, t: new Date(b.t_ms) }));
-  const gapEnd = w.max_gap_end_ms !== undefined ? new Date(w.max_gap_end_ms) : null;
-  const gapStart = gapEnd && w.max_gap_ms !== undefined ? new Date(w.max_gap_end_ms! - w.max_gap_ms) : null;
+  const gaps = classifyGaps(w.gaps ?? [], samples).map((g) => ({ ...g, a: new Date(g.startMs), b: new Date(g.endMs) }));
+  const stalls = gaps.filter((g) => g.kind === "stall");
+  const longestStall = stalls.length ? Math.max(...stalls.map((g) => g.ms)) : null;
   const sinceLast = w.last_dispatch_ms !== undefined ? Date.parse(w.read_at) - w.last_dispatch_ms : null;
   return (
     <section className="panel" aria-labelledby="disp-h">
@@ -130,15 +135,16 @@ export function DispatchLog({ window: w, pending }: { window: DispatchWindow | n
           {fmtInt(w.count)}
           {w.truncated ? " (read capped)" : ""}
         </dd>
-        <dt>longest gap</dt>
+        <dt>longest stall</dt>
         <dd className="num">
-          {w.max_gap_ms !== undefined ? fmtMs(w.max_gap_ms) : "—"}
-          {w.max_gap_ms !== undefined && w.max_gap_ms >= 1000 && <span className="small muted"> · shaded</span>}
+          {longestStall !== null ? fmtMs(longestStall) : "none"}
+          <span className="small muted"> · no dispatch while work was waiting</span>
         </dd>
         <dt>since last dispatch</dt>
         <dd className="num">
           {sinceLast !== null ? fmtMs(sinceLast) : "—"}
-          {sinceLast !== null && sinceLast > 1000 && pending === 0 && <span className="small muted"> · nothing pending, so idle is expected</span>}
+          {sinceLast !== null && sinceLast > 1000 && waiting === 0 && <span className="small muted"> · nothing waiting, so idle is expected</span>}
+          {sinceLast !== null && sinceLast > 1000 && waiting !== null && waiting > 0 && <span className="small" style={{ color: "var(--bad)" }}> · {waiting} tasks waiting</span>}
         </dd>
         <dt>epochs in window</dt>
         <dd className="num">{w.epochs.length ? w.epochs.join(", ") : "—"}</dd>
@@ -157,9 +163,13 @@ export function DispatchLog({ window: w, pending }: { window: DispatchWindow | n
               y: { label: `dispatches / ${w.bucket_ms} ms`, grid: true },
               marks: [
                 Plot.gridY({ ...GRID }),
-                gapStart && gapEnd && w.max_gap_ms! >= 1000
-                  ? Plot.rectX([{ a: gapStart, b: gapEnd }], { x1: "a", x2: "b", fill: "var(--bad)", fillOpacity: 0.08 })
-                  : null,
+                Plot.rectX(gaps, {
+                  x1: "a",
+                  x2: "b",
+                  fill: (g) => (g.kind === "stall" ? "var(--bad)" : "var(--ink-3)"),
+                  fillOpacity: (g) => (g.kind === "stall" ? 0.12 : 0.06),
+                }),
+                Plot.tip(gaps, Plot.pointerX({ x: (g) => new Date((g.startMs + g.endMs) / 2), title: (g) => `${g.kind === "stall" ? "stall: work was waiting" : g.kind === "idle" ? "idle: nothing waiting" : "gap: not enough samples to say"}\n${fmtMs(g.ms)} without a dispatch` })),
                 Plot.rectY(buckets, {
                   x1: "t",
                   x2: (d) => new Date(d.t_ms + w.bucket_ms),
@@ -179,6 +189,12 @@ export function DispatchLog({ window: w, pending }: { window: DispatchWindow | n
             <i className="swatch dot" style={{ background: epochColor(e), borderRadius: 0 }} /> epoch {e}
           </span>
         ))}
+        <span>
+          <i className="swatch dot" style={{ background: "var(--bad)", opacity: 0.35, borderRadius: 0 }} /> stall: work waiting, nothing dispatched
+        </span>
+        <span>
+          <i className="swatch dot" style={{ background: "var(--ink-3)", opacity: 0.25, borderRadius: 0 }} /> idle: nothing waiting
+        </span>
         {w.unstamped > 0 && (
           <span>
             <i className="swatch dot" style={{ background: epochColor(0), borderRadius: 0 }} /> retries, no epoch ({w.unstamped})
@@ -187,9 +203,10 @@ export function DispatchLog({ window: w, pending }: { window: DispatchWindow | n
       </div>
       <p className="tiny muted">
         Read from the execution stream itself, where the dispatch script stamps every entry with its time and epoch.
-        This is what was dispatched, not what any scheduler reports. A gap is how a failover looks from here. It is
-        also how an idle queue looks, so read it with the pending count. An inversion would be a superseded leader
-        writing after its successor; the fence exists to keep it at zero.
+        This is what was dispatched, not what any scheduler reports. A gap of a second or more is shaded, and classed
+        by the pending count sampled while it lasted: a stall had work waiting, so it is how a failover looks from
+        here; an idle gap had nothing to dispatch. An inversion would be a superseded leader writing after its
+        successor; the fence exists to keep it at zero.
       </p>
     </section>
   );

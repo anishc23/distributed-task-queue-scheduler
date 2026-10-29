@@ -46,13 +46,18 @@ type Leadership struct {
 
 // QueueState is the queue as Redis records it.
 type QueueState struct {
-	Pending            int64            `json:"pending"`
-	InFlight           int64            `json:"in_flight"`
-	Unacked            int64            `json:"unacked"`
-	DeadLettered       int64            `json:"dead_lettered"`
-	OldestPendingWaitS *float64         `json:"oldest_pending_wait_s,omitempty"`
-	Counters           map[string]int64 `json:"counters"`
-	TenantCompleted    map[string]int64 `json:"tenant_completed"`
+	Pending            int64    `json:"pending"`
+	InFlight           int64    `json:"in_flight"`
+	Unacked            int64    `json:"unacked"`
+	DeadLettered       int64    `json:"dead_lettered"`
+	OldestPendingWaitS *float64 `json:"oldest_pending_wait_s,omitempty"`
+	// NotAdmitted is submitted work the scheduler has not yet admitted:
+	// unread plus read-but-unacknowledged ingress entries. While no scheduler
+	// leads, new work accumulates here and Pending does not move.
+	NotAdmitted       int64            `json:"not_admitted"`
+	NotAdmittedCapped bool             `json:"not_admitted_capped,omitempty"`
+	Counters          map[string]int64 `json:"counters"`
+	TenantCompleted   map[string]int64 `json:"tenant_completed"`
 }
 
 // Rates are derived from consecutive readings of the Redis counters, which,
@@ -94,6 +99,7 @@ type Sample struct {
 	At             time.Time `json:"t"`
 	RedisOK        bool      `json:"redis_ok"`
 	Pending        *int64    `json:"pending"`
+	NotAdmitted    *int64    `json:"not_admitted"`
 	InFlight       *int64    `json:"in_flight"`
 	DispatchedPerS *float64  `json:"dispatched_per_s"`
 	CompletedPerS  *float64  `json:"completed_per_s"`
@@ -101,6 +107,9 @@ type Sample struct {
 	Epoch          int64     `json:"epoch,omitempty"`
 	LeaderSum      *int      `json:"leader_sum"`
 }
+
+// backlogLimit bounds how many unread ingress entries one poll counts.
+const backlogLimit = 10000
 
 // Options configures a Console.
 type Options struct {
@@ -269,6 +278,11 @@ func (c *Console) readRedis(ctx context.Context, snap *Snapshot) {
 	collect(err)
 	q.DeadLettered, err = br.DeadLetterCount(ctx)
 	collect(err)
+	if unread, unacked, capped, err := br.IngressBacklog(ctx, backlogLimit); err != nil {
+		collect(err)
+	} else {
+		q.NotAdmitted, q.NotAdmittedCapped = unread+unacked, capped
+	}
 	_, q.TenantCompleted, err = br.TenantService(ctx)
 	collect(err)
 	if oldest, ok, err := br.OldestPendingSubmit(ctx); err != nil {
@@ -332,8 +346,8 @@ func sampleOf(s *Snapshot) Sample {
 	out := Sample{At: s.SampledAt, RedisOK: s.Redis.OK, LeaderSum: s.LeaderSum,
 		DispatchedPerS: s.Rates.DispatchedPerS, CompletedPerS: s.Rates.CompletedPerS}
 	if s.Queue != nil {
-		p, f := s.Queue.Pending, s.Queue.InFlight
-		out.Pending, out.InFlight = &p, &f
+		p, f, n := s.Queue.Pending, s.Queue.InFlight, s.Queue.NotAdmitted
+		out.Pending, out.InFlight, out.NotAdmitted = &p, &f, &n
 	}
 	if s.Leadership.Held {
 		out.Owner, out.Epoch = s.Leadership.Owner, s.Leadership.Epoch

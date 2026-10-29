@@ -809,6 +809,38 @@ func (b *Broker) DispatchesSince(ctx context.Context, since time.Time, count int
 	return out, nil
 }
 
+// IngressBacklog reports submitted work the scheduler has not yet admitted:
+// entries in the ingress stream its group has never read (unread), and
+// entries read but not yet acknowledged (unacked), which include any stranded
+// by a scheduler that died mid-batch. While no scheduler leads, this is where
+// new work accumulates; the pending set does not grow until something admits.
+//
+// Unread entries are counted directly, up to limit, rather than taken from
+// XINFO's lag, which Redis reports as unknown in some cases and the client
+// reads as zero. capped is true when the count reached limit.
+func (b *Broker) IngressBacklog(ctx context.Context, limit int64) (unread, unacked int64, capped bool, err error) {
+	groups, err := b.rdb.XInfoGroups(ctx, b.keys.Ingress).Result()
+	if err != nil {
+		return 0, 0, false, fmt.Errorf("ingress groups: %w", err)
+	}
+	for _, g := range groups {
+		if g.Name != b.keys.SchedulerGroup {
+			continue
+		}
+		start := "-"
+		if g.LastDeliveredID != "" && g.LastDeliveredID != "0-0" {
+			start = "(" + g.LastDeliveredID
+		}
+		msgs, err := b.rdb.XRangeN(ctx, b.keys.Ingress, start, "+", limit).Result()
+		if err != nil {
+			return 0, 0, false, fmt.Errorf("ingress backlog: %w", err)
+		}
+		n := int64(len(msgs))
+		return n, g.Pending, n >= limit, nil
+	}
+	return 0, 0, false, fmt.Errorf("ingress has no %s group", b.keys.SchedulerGroup)
+}
+
 // DeadLetterCount returns the number of dead-lettered tasks.
 func (b *Broker) DeadLetterCount(ctx context.Context) (int64, error) {
 	n, err := b.rdb.XLen(ctx, b.keys.DeadLetter).Result()

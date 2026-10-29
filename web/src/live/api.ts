@@ -53,6 +53,8 @@ export interface Snapshot {
     unacked: number;
     dead_lettered: number;
     oldest_pending_wait_s?: number;
+    not_admitted: number;
+    not_admitted_capped?: boolean;
     counters: Record<string, number>;
     tenant_completed: Record<string, number>;
   };
@@ -66,6 +68,7 @@ export interface Sample {
   t: string;
   redis_ok: boolean;
   pending: number | null;
+  not_admitted?: number | null;
   in_flight: number | null;
   dispatched_per_s: number | null;
   completed_per_s: number | null;
@@ -97,6 +100,7 @@ export interface DispatchWindow {
   max_gap_end_ms?: number;
   last_dispatch_ms?: number;
   epoch_inversions: number;
+  gaps: { start_ms: number; end_ms: number }[];
 }
 
 export interface Preset {

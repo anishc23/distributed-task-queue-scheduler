@@ -52,7 +52,11 @@ export default function LivePage() {
               <Processes snap={snapshot!} now={live.now} />
             </div>
             <HistoryCharts samples={live.history} />
-            <DispatchLog window={live.dispatches} pending={snapshot?.queue?.pending ?? null} />
+            <DispatchLog
+              window={live.dispatches}
+              waiting={snapshot?.queue ? snapshot.queue.pending + snapshot.queue.not_admitted : null}
+              samples={live.history}
+            />
             <div className="live-row">
               <ControlPanel
                 live={live}

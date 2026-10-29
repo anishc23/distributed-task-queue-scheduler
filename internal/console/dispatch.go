@@ -14,6 +14,20 @@ type DispatchBucket struct {
 	N     int   `json:"n"`
 }
 
+// DispatchGap is an interval with no dispatch at all. Whether it was an
+// outage or an idle queue is not knowable from the stream alone; the
+// interface decides that from the pending count it sampled meanwhile.
+type DispatchGap struct {
+	StartMS int64 `json:"start_ms"`
+	EndMS   int64 `json:"end_ms"`
+}
+
+// MinReportedGap is the shortest gap listed in Gaps.
+const MinReportedGap = time.Second
+
+// maxReportedGaps bounds the list; the longest are kept.
+const maxReportedGaps = 20
+
 // DispatchWindow summarises the execution stream over a recent window. It is
 // read from Redis, from the stamps the dispatch script wrote, so it describes
 // what was actually dispatched, not what any scheduler believes it did.
@@ -36,6 +50,9 @@ type DispatchWindow struct {
 	MaxGapMS    *int64 `json:"max_gap_ms,omitempty"`
 	MaxGapEndMS *int64 `json:"max_gap_end_ms,omitempty"`
 	LastMS      *int64 `json:"last_dispatch_ms,omitempty"`
+	// Gaps lists every gap of at least MinReportedGap, oldest first (the
+	// longest maxReportedGaps if there are more).
+	Gaps []DispatchGap `json:"gaps"`
 	// EpochInversions counts stamped entries whose epoch is older than one
 	// already written earlier in the stream: a superseded leader writing
 	// after its successor. The fence exists to keep this at zero.
@@ -47,7 +64,7 @@ func SummariseDispatches(msgs []broker.ExecMessage, from time.Time, window time.
 	out := DispatchWindow{
 		FromMS: from.UnixMilli(), WindowS: int(window / time.Second), BucketMS: bucket.Milliseconds(),
 		Count: len(msgs), Truncated: cap > 0 && len(msgs) >= cap,
-		Buckets: []DispatchBucket{}, Epochs: []int64{},
+		Buckets: []DispatchBucket{}, Epochs: []int64{}, Gaps: []DispatchGap{},
 	}
 	type key struct {
 		t     int64
@@ -74,9 +91,13 @@ func SummariseDispatches(msgs []broker.ExecMessage, from time.Time, window time.
 			out.Unstamped++
 		}
 		if prev != 0 {
-			if gap := at - prev; out.MaxGapMS == nil || gap > *out.MaxGapMS {
+			gap := at - prev
+			if out.MaxGapMS == nil || gap > *out.MaxGapMS {
 				g, end := gap, at
 				out.MaxGapMS, out.MaxGapEndMS = &g, &end
+			}
+			if gap >= MinReportedGap.Milliseconds() {
+				out.Gaps = append(out.Gaps, DispatchGap{StartMS: prev, EndMS: at})
 			}
 		}
 		prev = at
@@ -94,6 +115,13 @@ func SummariseDispatches(msgs []broker.ExecMessage, from time.Time, window time.
 		}
 		return out.Buckets[i].Epoch < out.Buckets[j].Epoch
 	})
+	if len(out.Gaps) > maxReportedGaps {
+		sort.Slice(out.Gaps, func(i, j int) bool {
+			return out.Gaps[i].EndMS-out.Gaps[i].StartMS > out.Gaps[j].EndMS-out.Gaps[j].StartMS
+		})
+		out.Gaps = out.Gaps[:maxReportedGaps]
+		sort.Slice(out.Gaps, func(i, j int) bool { return out.Gaps[i].StartMS < out.Gaps[j].StartMS })
+	}
 	for e := range epochs {
 		out.Epochs = append(out.Epochs, e)
 	}

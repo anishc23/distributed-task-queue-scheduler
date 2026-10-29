@@ -333,6 +333,36 @@ func TestDispatchesSinceReadsAWindowOfTheDispatchLog(t *testing.T) {
 	}
 }
 
+// Work submitted while nothing admits sits in the ingress stream, not the
+// pending set. The backlog must count it, and count what a scheduler has read
+// but not acknowledged, separately.
+func TestIngressBacklogCountsWorkNotYetAdmitted(t *testing.T) {
+	br, _ := newBroker(t)
+	ctx := testContext(t)
+	if err := br.EnsureStreams(ctx); err != nil {
+		t.Fatalf("ensure streams: %v", err)
+	}
+	for _, id := range []string{"b-1", "b-2", "b-3", "b-4"} {
+		if err := br.Submit(ctx, task(id, 0)); err != nil {
+			t.Fatalf("submit %s: %v", id, err)
+		}
+	}
+	unread, unacked, capped, err := br.IngressBacklog(ctx, 100)
+	if err != nil || unread != 4 || unacked != 0 || capped {
+		t.Fatalf("before any read: unread=%d unacked=%d capped=%v err=%v; want 4, 0, false", unread, unacked, capped, err)
+	}
+	if _, err := br.ReadIngress(ctx, "s", 3, 0); err != nil {
+		t.Fatalf("read ingress: %v", err)
+	}
+	unread, unacked, _, err = br.IngressBacklog(ctx, 100)
+	if err != nil || unread != 1 || unacked != 3 {
+		t.Fatalf("after reading three: unread=%d unacked=%d err=%v; want 1, 3", unread, unacked, err)
+	}
+	if _, _, capped, _ := br.IngressBacklog(ctx, 1); !capped {
+		t.Error("a count that reached the limit was not reported as capped")
+	}
+}
+
 // With election off there is no term to record, and the stamp must not invent
 // one. A zero here is what tells a reader that the entry is outside the fence's
 // scope rather than dispatched by term zero.

@@ -13,7 +13,7 @@ function snapshot(over: Record<string, unknown> = {}) {
     sampled_at: now(),
     redis: { ok: true, latency_ms: 0.3, namespace: "tq-console-demo" },
     leadership: { held: true, owner: "sched-0", epoch: 3, lease_remaining_ms: 4200, fence: 3, epoch_counter: 3 },
-    queue: { pending: 12, in_flight: 8, unacked: 8, dead_lettered: 0, counters: { retried: 0 }, tenant_completed: {} },
+    queue: { pending: 12, not_admitted: 0, in_flight: 8, unacked: 8, dead_lettered: 0, counters: { retried: 0 }, tenant_completed: {} },
     rates: { window_s: 1, dispatched_per_s: 150, completed_per_s: 149 },
     components: [
       { name: "sched-0", role: "scheduler", url: "http://127.0.0.1:19501", health: "ready", metrics: { tq_scheduler_is_leader: 1, tq_scheduler_leader_epoch: 3 }, last_ok_at: now(), process: { state: "running", link: "connected", restarts: 0, pid: 11 } },
@@ -51,7 +51,7 @@ async function mock(page: Page, opts: { status?: (r: Route) => Promise<void>; on
       case "/api/v1/history":
         return json({ console: info(), samples: [] });
       case "/api/v1/dispatches":
-        return json({ read_at: now(), from_ms: Date.now() - 90_000, window_s: 90, bucket_ms: 250, count: 0, truncated: false, buckets: [], epochs: [], unstamped: 0, epoch_inversions: 0 });
+        return json({ read_at: now(), from_ms: Date.now() - 90_000, window_s: 90, bucket_ms: 250, count: 0, truncated: false, buckets: [], epochs: [], unstamped: 0, epoch_inversions: 0, gaps: [] });
       case "/api/v1/dlq":
         return json({ read_at: now(), entries: [] });
     }
