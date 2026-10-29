@@ -608,6 +608,74 @@ The small advantage above 5 ms is not interpreted. A plausible mechanism is that
 batched dispatch keeps slots filled more evenly than independent per-worker
 polling, but that was not tested.
 
+## Scheduler partition
+
+`cmd/partitionbench` cuts one scheduler off from a Redis that stays up.
+
+```bash
+make partition PARTITION_REPETITIONS=12 RUN=partition
+make partition-sweep RUN=partition-sweep
+make partition-plots RUN=partition SWEEP_RUN=partition-sweep
+```
+
+### Why this is a separate experiment
+
+The failover experiment kills the leader, and its `pause` arm freezes it. A
+frozen leader resumes with its connection intact and learns nothing while it is
+stopped. A partitioned leader is running the whole time and learns that every
+call is failing, but it cannot tell an unreachable Redis from having been
+replaced. The two call for opposite responses, and the lease must not stand
+down on the first failed renewal, so the fence is what has to make the
+ambiguity safe.
+
+### How the partition is made
+
+Each scheduler replica reaches Redis through its own `internal/netfault` proxy.
+Cutting it closes the open connections and refuses new ones. Workers, the
+harness and the other replica talk to Redis directly or through their own
+proxies, so only the leader's path is severed. The cut is jittered over one
+renewal interval from a seeded generator, as in the failover runs.
+
+### The arms
+
+| arm | partition |
+| --- | --- |
+| `none` | no partition: the natural dispatch gap |
+| `brief` | half the lease TTL; leadership should not move |
+| `long` | twice the lease TTL; a standby should take over and the returning leader be refused |
+| `flapping` | cut and healed every 700 ms for 3 × the TTL |
+| `--sweep` | one arm per partition length, as multiples of the TTL |
+
+After every heal the harness waits 4 s, then reads the lease holder, scrapes
+`tq_scheduler_fenced_operations_total` from the replica that was cut off, and
+requires exactly one replica to report leadership. It replays the dispatch log
+for epoch inversions and aborts on the first one.
+
+### Host sleep
+
+Two earlier attempts ran on battery and macOS slept the machine mid-run, which
+reads as a split brain (stale gauges) and as an outage (a gap in the dispatch
+log). Every trial now measures the host's own suspension through
+`internal/hostclock` and marks a trial that slept as `suspect`. Suspect trials
+are dropped and counted, never averaged; `scripts/plot_partition.py` and the
+site export both exclude them. Run this experiment on mains power.
+
+### What this experiment found
+
+- **Shorter than the lease: the outage is the partition** (median 2,526 ms for
+  a 2.5 s cut) and leadership never moved, 0 of 12.
+- **Longer than the lease: the outage is a crash's** (median 4,376 ms for a
+  10 s cut, 12 of 12 inside `[3.5 s, 6.0 s]`), and the returning leader was
+  refused by the fence in 11 of 12 trials.
+- **Flapping**: leadership moved at most once per trial (7 of 12), every
+  replaced leader was fenced, no gap over 1.72 s.
+- **The sweep**: outage tracks the partition up to 0.75 × the TTL, then levels
+  off inside the crash window (32 of 32 trials at or beyond the TTL), whether
+  the cut lasts 5 s or 15 s. No failover below `TTL − renew` (0 of 16), always
+  one at or beyond the TTL (32 of 32), 2 of 8 in between.
+- Exactly one leader after every heal, no epoch inversions, no duplicate
+  completions, no unfinished tasks, no suspect trials.
+
 ## Known limitations
 
 1. **Simulated execution.** Workers sleep rather than compute by default.
@@ -655,8 +723,10 @@ polling, but that was not tested.
   how far the sleep-based conclusions transfer.
 - Latency-aware autoscaling driven by `tq_pending_tasks` and
   `tq_longest_pending_wait_seconds` rather than CPU.
-- Redis failover and network-partition injection. Scheduler failure is now
-  measured; the store the fencing argument depends on is not.
+- Composing the faults. Scheduler failure, a Redis failover and a scheduler
+  partitioned from a healthy Redis are each measured, but separately: a
+  partition during a store failover, and a partition between workers and the
+  store, are not.
 - Failover under load rather than beside it: every trial here kills the leader
   while the queue is in steady state, so the measured outage is the time to
   resume dispatching, not the time to work off the backlog the outage created.

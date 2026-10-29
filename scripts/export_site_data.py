@@ -527,23 +527,79 @@ def baseline() -> dict:
     }
 
 
-# Experiments that exist in code but whose results are not published. The site
-# renders these as pending, with the reason, and never with numbers.
-PENDING = [
-    {
+def partition() -> dict:
+    out, srcs = [], []
+    for run in ("partition", "partition-sweep"):
+        src = Source()
+        for x in src.read(ROOT / f"results/{run}/partition.csv"):
+            arm = x["arm"]
+            cut = num(x["partition_ms"]) or 0.0
+            recovered = boolean(x["recovered"])
+            outage = num(x["outage_ms"])
+            # An arm with no partition has no outage to speak of; its number is
+            # the largest natural gap, which max_gap_ms already carries. A
+            # partitioned trial with no dispatch after the cut is censored, as
+            # in the failover dataset, and never carries a duration.
+            censored = cut > 0 and (not recovered or outage is None or outage < 0)
+            out.append({
+                "run": run, "arm": arm, "rep": int(x["rep"]),
+                "sweep_multiple": float(arm[:-1]) if run == "partition-sweep" else None,
+                "lease_ttl_ms": int(x["lease_ttl_ms"]), "lease_renew_ms": int(x["lease_renew_ms"]),
+                "partition_ms": cut, "cut_count": int(x["cut_count"]),
+                "outage_ms": None if cut == 0 or censored else outage,
+                "censored": censored,
+                "max_gap_ms": num(x["max_gap_ms"]),
+                "failover": boolean(x["failover"]),
+                "unexpected_failover": boolean(x["unexpected_failover"]),
+                "leader_epochs": int(x["leader_epochs"]),
+                # fenced_on_heal is a counter scraped from the replica that was
+                # cut off: nonzero means Redis refused a write it made under a
+                # superseded epoch.
+                "fenced": float(x["fenced_on_heal"]) > 0,
+                # Only scraped once a partition has healed; the no-partition arm
+                # never takes the reading, so it is missing there, not zero.
+                "leaders_after_heal": int(float(x["leaders_after_heal"])) if cut > 0 else None,
+                "epoch_inversions": int(x["epoch_inversions"]),
+                "tasks": int(x["tasks"]), "completed": int(x["completed"]),
+                "unfinished": int(x["tasks"]) - int(x["completed"]) - int(x["dead_lettered"]),
+                "duplicate_completions": int(x["duplicate_completions"]),
+                "suspect": boolean(x["suspect"]),
+                "host_suspended_ms": num(x["host_suspended_ms"]),
+            })
+        srcs.extend(src.describe())
+    return {
         "id": "partition",
         "title": "A scheduler partitioned from a Redis that stays up",
-        "harness": "cmd/partitionbench",
-        "commands": ["make partition PARTITION_REPETITIONS=12", "make partition-sweep RUN=partition-sweep"],
-        "status": "pending",
-        "reason": (
-            "The harness is written and tested. A first named-arm run exists but predates the "
-            "host-sleep detection added to the harness, and the partition-length sweep was "
-            "interrupted twice by the laptop sleeping on battery power. Neither is published; "
-            "both are to be re-run on mains power."
-        ),
-    },
-]
+        "report_section": "4.11",
+        "command": ("make partition PARTITION_REPETITIONS=12 RUN=partition\n"
+                    "make partition-sweep RUN=partition-sweep"),
+        "conditions": {"tasks_per_trial": 4000, "submission_rate_per_s": 400, "exec_ms": 20,
+                       "worker_slots": 32, "policy": "wfq", "replicas": 2,
+                       "lease_ttl_ms": 5000, "lease_renew_ms": 1500, "standby_retry_ms": 1000,
+                       "settle_after_heal_ms": 4000, "flap_half_period_ms": 700,
+                       "named_repetitions": 12, "sweep_repetitions": 8},
+        "caveats": [
+            "Rows with suspect=true are trials during which the host slept (detected directly by "
+            "internal/hostclock) or whose outage was far beyond what the partition and the lease "
+            "can explain. They are kept so the exclusion is visible, and excluded from every number.",
+            "The partition is cut at the socket by a per-replica proxy (internal/netfault). Redis, "
+            "the workers and the other replica keep their paths throughout.",
+            "outage_ms is the dispatch gap around the first cut. In the flapping arm the path is cut "
+            "eleven times; max_gap_ms is the largest gap anywhere in the trial.",
+            "All processes share one host, so there is no real network between them: this measures "
+            "the protocol's response to a severed path, not a WAN's.",
+        ],
+        "fields": {"partition_ms": "ms", "outage_ms": "ms", "max_gap_ms": "ms",
+                   "lease_ttl_ms": "ms", "lease_renew_ms": "ms", "host_suspended_ms": "ms",
+                   "sweep_multiple": "x lease TTL"},
+        "sources": srcs,
+        "rows": out,
+    }
+
+
+# Experiments that exist in code but whose results are not published. The site
+# renders these as pending, with the reason, and never with numbers.
+PENDING: list[dict] = []
 
 
 def inventory(datasets: dict[str, dict]) -> dict:
@@ -560,6 +616,7 @@ def inventory(datasets: dict[str, dict]) -> dict:
         return e, t
 
     fo = [o for o in datasets["failover"]["rows"]]
+    pt = [o for o in datasets["partition"]["rows"] if not o["suspect"]]
     rows = [
         ("Main matrix, 25 repetitions", "final-25rep", *pair("final-25rep")),
         ("Offered-load sweep", "sweep-loads", *pair("sweep-loads")),
@@ -583,6 +640,13 @@ def inventory(datasets: dict[str, dict]) -> dict:
          len(datasets["storefault"]["rows"]), 2000 * len(datasets["storefault"]["rows"])),
         ("External baseline against Asynq", "baseline",
          len(datasets["baseline"]["rows"]), sum(o["tasks"] for o in datasets["baseline"]["rows"])),
+        # Suspect trials are dropped from the count as from every statistic.
+        ("Scheduler partition, four arms", "partition",
+         sum(1 for o in pt if o["run"] == "partition"),
+         sum(o["tasks"] for o in pt if o["run"] == "partition")),
+        ("Partition-length sweep", "partition-sweep",
+         sum(1 for o in pt if o["run"] == "partition-sweep"),
+         sum(o["tasks"] for o in pt if o["run"] == "partition-sweep")),
     ]
     out = [{"name": n, "runs": run, "experiments": e, "tasks": t} for n, run, e, t in rows]
     return {
@@ -723,6 +787,84 @@ def claims(d: dict[str, dict]) -> list[dict]:
         claim("4.10", f"Asynq, median throughput at {ms} ms (tasks/s)", aq,
               median([x["throughput_per_s"] for x in bl if x["system"] == "asynq" and x["exec_ms"] == ms]), 0.05)
 
+    # 4.11 scheduler partition. Suspect trials are excluded from every number,
+    # and the report says how many there were.
+    pa = d["partition"]["rows"]
+    claim("4.11", "suspect trials, both partition runs", 0, sum(1 for x in pa if x["suspect"]), 0)
+    pa = [x for x in pa if not x["suspect"]]
+    def part(run, name):
+        rows = [x for x in pa if x["run"] == run and x["arm"] == name]
+        if not rows:
+            raise SystemExit(f"no {run} rows for arm {name}")
+        return rows
+    named = [x for x in pa if x["run"] == "partition"]
+    claim("4.11", "named-arm trials", 48, len(named), 0)
+    none_arm = part("partition", "none")
+    claim("4.11", "no partition: median largest natural gap (ms)", 5,
+          median([x["max_gap_ms"] for x in none_arm]), 0.5)
+    claim("4.11", "no partition: largest natural gap, max (ms)", 6,
+          max(x["max_gap_ms"] for x in none_arm), 0.5)
+    for name, cut, out_med, lo, hi, moved, fenced in [
+        ("brief", 2500, 2526, 2409, 2624, 0, 0),
+        ("long", 10000, 4376, 3537, 4955, 12, 11),
+        ("flapping", 15410, 774, 442, 808, 7, 7),
+    ]:
+        rows = part("partition", name)
+        outs = [x["outage_ms"] for x in rows]
+        claim("4.11", f"{name}: median partition (ms)", cut, median([x["partition_ms"] for x in rows]), 0.5)
+        claim("4.11", f"{name}: median outage (ms)", out_med, median(outs), 0.5)
+        claim("4.11", f"{name}: shortest outage (ms)", lo, min(outs), 0.5)
+        claim("4.11", f"{name}: longest outage (ms)", hi, max(outs), 0.5)
+        claim("4.11", f"{name}: trials in which leadership moved", moved, sum(1 for x in rows if x["failover"]), 0)
+        claim("4.11", f"{name}: returning leader refused by the fence", fenced, sum(1 for x in rows if x["fenced"]), 0)
+    long_arm = part("partition", "long")
+    claim("4.11", "long: outages inside the crash window [3.5 s, 6.0 s]", 12,
+          sum(1 for x in long_arm if 3500 <= x["outage_ms"] <= 6000), 0)
+    flap = part("partition", "flapping")
+    claim("4.11", "flapping: cuts per trial", 11, median([x["cut_count"] for x in flap]), 0)
+    claim("4.11", "flapping: largest dispatch gap anywhere in the arm (ms)", 1720,
+          max(x["max_gap_ms"] for x in flap), 0.5)
+    claim("4.11", "flapping: most leadership terms in any trial", 2, max(x["leader_epochs"] for x in flap), 0)
+    claim("4.11", "flapping: every replaced leader was fenced (1 = true)", 1,
+          1.0 if all(x["fenced"] == x["failover"] for x in flap) else 0.0, 0)
+    healed = [x for x in named if x["partition_ms"] > 0]
+    claim("4.11", "named partitioned trials", 36, len(healed), 0)
+    claim("4.11", "named partitioned trials ending with exactly one leader", 36,
+          sum(1 for x in healed if x["leaders_after_heal"] == 1), 0)
+    claim("4.11", "epoch inversions across all partition trials", 0, sum(x["epoch_inversions"] for x in pa), 0)
+    claim("4.11", "duplicate completions across all partition trials", 0,
+          sum(x["duplicate_completions"] for x in pa), 0)
+    claim("4.11", "tasks unfinished across all partition trials", 0, sum(x["unfinished"] for x in pa), 0)
+    sweep_rows = [x for x in pa if x["run"] == "partition-sweep"]
+    claim("4.11", "sweep trials", 56, len(sweep_rows), 0)
+    for m, cut, out_med, lo, hi, moved, fenced in [
+        (0.25, 1250, 1307, 1227, 1414, 0, 0),
+        (0.5, 2500, 2546, 2369, 2613, 0, 0),
+        (0.75, 3750, 3743, 3703, 3864, 2, 2),
+        (1.0, 5000, 4378, 3697, 4955, 8, 8),
+        (1.5, 7500, 4328, 3529, 4906, 8, 7),
+        (2.0, 10000, 4465, 4181, 4733, 8, 6),
+        (3.0, 15000, 4131, 3527, 4887, 8, 5),
+    ]:
+        rows = [x for x in sweep_rows if x["sweep_multiple"] == m]
+        if len(rows) != 8:
+            raise SystemExit(f"sweep length {m}x has {len(rows)} trials, expected 8")
+        outs = [x["outage_ms"] for x in rows]
+        claim("4.11", f"sweep {m}x: median partition (ms)", cut, median([x["partition_ms"] for x in rows]), 0.5)
+        claim("4.11", f"sweep {m}x: median outage (ms)", out_med, median(outs), 0.5)
+        claim("4.11", f"sweep {m}x: shortest outage (ms)", lo, min(outs), 0.5)
+        claim("4.11", f"sweep {m}x: longest outage (ms)", hi, max(outs), 0.5)
+        claim("4.11", f"sweep {m}x: trials in which leadership moved", moved, sum(1 for x in rows if x["failover"]), 0)
+        claim("4.11", f"sweep {m}x: returning leader refused by the fence", fenced, sum(1 for x in rows if x["fenced"]), 0)
+    at_or_past = [x for x in sweep_rows if x["sweep_multiple"] >= 1]
+    claim("4.11", "sweep: trials at or beyond the lease inside the crash window [3.5 s, 6.0 s]", 32,
+          sum(1 for x in at_or_past if 3500 <= x["outage_ms"] <= 6000), 0)
+    claim("4.11", "sweep: failovers below TTL - renew (3.5 s)", 0,
+          sum(1 for x in sweep_rows if x["partition_ms"] < 3500 and x["failover"]), 0)
+    claim("4.11", "sweep: trials below TTL - renew", 16, sum(1 for x in sweep_rows if x["partition_ms"] < 3500), 0)
+    claim("4.11", "sweep: trials ending with exactly one leader", 56,
+          sum(1 for x in sweep_rows if x["leaders_after_heal"] == 1), 0)
+
     # 5.3 real work.
     rw = d["realwork"]["rows"]
     for mode, printed in [("sleep", 0.099), ("cpu", 0.829)]:
@@ -739,8 +881,8 @@ def claims(d: dict[str, dict]) -> list[dict]:
 
     # Appendix B.
     inv = d["inventory"]
-    claim("B", "total experiments", 1463, inv["total_experiments"], 0)
-    claim("B", "total tasks", 5436000, inv["total_tasks"], 0)
+    claim("B", "total experiments", 1567, inv["total_experiments"], 0)
+    claim("B", "total tasks", 5852000, inv["total_tasks"], 0)
     return out
 
 
@@ -758,7 +900,7 @@ def main() -> int:
         return 2
 
     builders = [matrix, sweep, control, priority_starvation, tenants, realwork,
-                ceiling, failover, storefault, baseline]
+                ceiling, failover, storefault, baseline, partition]
     datasets: dict[str, dict] = {}
     for build in builders:
         ds = build()

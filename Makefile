@@ -31,6 +31,10 @@ STOREFAULT_REPETITIONS ?= 10
 # The baseline sweeps six task durations, so each repetition is twelve runs.
 BASELINE_REPETITIONS ?= 5
 PARTITION_REPETITIONS ?= 12
+# Partition lengths for the sweep, as multiples of the lease TTL. A variable
+# rather than an inline default: Make's $(or) splits its arguments on commas,
+# so a comma-separated default written inside it silently becomes "0.25".
+PARTITION_SWEEP ?= 0.25,0.5,0.75,1,1.5,2,3
 RUN             ?=
 RESULTS_DIR     ?= results
 RUN_CONFIG      ?= experiments/quick.yaml
@@ -330,7 +334,7 @@ partition-sweep: ## Outage against partition length: make partition-sweep RUN=pa
 	@$(MAKE) --no-print-directory redis-check
 	$(shell command -v caffeinate >/dev/null && echo caffeinate -dims) \
 		$(GO) run ./cmd/partitionbench --redis-addr=$(REDIS_ADDR) \
-		--repetitions=$(or $(SWEEP_REPETITIONS),8) --sweep="$(or $(SWEEP),0.25,0.5,0.75,1,1.5,2,3)" \
+		--repetitions=$(or $(SWEEP_REPETITIONS),8) --sweep="$(or $(SWEEP),$(PARTITION_SWEEP))" \
 		--run-id=$(or $(RUN),partition-sweep) --results-dir=$(RESULTS_DIR)
 
 .PHONY: partition-plots

@@ -142,6 +142,32 @@ export interface BaselineRow {
   latency_p99_ms: number | null;
 }
 
+export interface PartitionRow {
+  run: "partition" | "partition-sweep";
+  arm: string;
+  rep: number;
+  sweep_multiple: number | null;
+  lease_ttl_ms: number;
+  lease_renew_ms: number;
+  partition_ms: number;
+  cut_count: number;
+  outage_ms: number | null;
+  censored: boolean;
+  max_gap_ms: number | null;
+  failover: boolean;
+  unexpected_failover: boolean;
+  leader_epochs: number;
+  fenced: boolean;
+  leaders_after_heal: number | null;
+  epoch_inversions: number;
+  tasks: number;
+  completed: number;
+  unfinished: number;
+  duplicate_completions: number;
+  suspect: boolean;
+  host_suspended_ms: number | null;
+}
+
 export interface Claim {
   section: string;
   claim: string;
@@ -187,6 +213,7 @@ export interface RowTypes {
   failover: FailoverRow;
   storefault: StorefaultRow;
   baseline: BaselineRow;
+  partition: PartitionRow;
 }
 export type DatasetId = keyof RowTypes;
 
@@ -239,6 +266,14 @@ const SPECS: { [K in DatasetId]: Spec } = {
   baseline: {
     system: "enum:taskqueue|asynq", rep: "integer", exec_ms: "integer", tasks: "integer",
     completed: "integer", concurrency: "integer", throughput_per_s: "number?", latency_p99_ms: "number?",
+  },
+  partition: {
+    run: "enum:partition|partition-sweep", arm: "string", rep: "integer", sweep_multiple: "number?",
+    lease_ttl_ms: "integer", lease_renew_ms: "integer", partition_ms: "number", cut_count: "integer",
+    outage_ms: "number?", censored: "boolean", max_gap_ms: "number?", failover: "boolean",
+    unexpected_failover: "boolean", leader_epochs: "integer", fenced: "boolean",
+    leaders_after_heal: "number?", epoch_inversions: "integer", tasks: "integer", completed: "integer",
+    unfinished: "integer", duplicate_completions: "integer", suspect: "boolean", host_suspended_ms: "number?",
   },
 };
 

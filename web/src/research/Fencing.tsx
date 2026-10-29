@@ -64,8 +64,8 @@ export function Fencing() {
       <Note kind="caveat" title="What this does not cover">
         <p className="small">
           A stopped process resumes with its connection to Redis intact. A scheduler partitioned from a healthy Redis
-          loses its path to the store as well as its sense of time. That is a different experiment. Its harness is
-          written but its results are not yet published; see <a href="#limitations">open work</a>.
+          keeps running and loses only its path to the store. That is a different experiment, measured separately; see{" "}
+          <a href="#partition">cut off from Redis</a>.
         </p>
       </Note>
     </Block>

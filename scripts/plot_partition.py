@@ -79,7 +79,7 @@ def read_run(run_dir: Path, name: str = "partition.csv") -> pd.DataFrame:
             df[col] = df[col].astype(str).str.lower().eq("true")
     if "suspect" in df.columns and df["suspect"].any():
         n = int(df["suspect"].sum())
-        print(f"  dropping {n} suspect trial(s): outage far beyond the partition and the lease")
+        print(f"  dropping {n} suspect trial(s): the host slept, or the outage was far beyond the partition and the lease")
         df = df[~df["suspect"]].reset_index(drop=True)
     if df.empty:
         raise SystemExit(f"{csv} has no usable trials")
@@ -209,8 +209,14 @@ def plot_sweep(df: pd.DataFrame, out_dir: Path, formats: list[str]) -> None:
     rec = df[df["recovered"]]
     if rec.empty:
         return
-    g = rec.groupby("partition_ms")["outage_ms"]
-    med, lo, hi = g.median(), g.min(), g.max()
+    # Group by arm, not by partition_ms: the partition is measured per trial,
+    # so no two trials share a value and grouping on it would make every trial
+    # its own point. Each arm is placed at its median measured partition.
+    g = rec.groupby("arm")
+    at = g["partition_ms"].median()
+    med = pd.Series(g["outage_ms"].median().values, index=at.values).sort_index()
+    lo = pd.Series(g["outage_ms"].min().values, index=at.values).sort_index()
+    hi = pd.Series(g["outage_ms"].max().values, index=at.values).sort_index()
     ttl = df["lease_ttl_ms"].mode().iloc[0]
 
     fig, ax = plt.subplots(figsize=(8.2, 5.6))

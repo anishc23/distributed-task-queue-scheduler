@@ -44,7 +44,7 @@ export function Corrections() {
           matrix's bursty rows were still at about 1.57× load, though described as 1.25×; (b) EDF was described as the
           best policy "at every load", beside a table showing strict priority ahead at 2× and 3×; (c) "122×" and
           "129×" had been divided from rounded values, and are 118× and 117×; (d) the store-failure trials used
-          2,000 tasks, not 3,000, so the study's task total is 5.44 M, not 5.47 M. None of these changes a
+          2,000 tasks, not 3,000, so the study's task total at the time was 5.44 M, not 5.47 M. None of these changes a
           conclusion's direction. The report now carries all four.
         </li>
       </ol>

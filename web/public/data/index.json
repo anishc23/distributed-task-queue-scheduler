@@ -537,6 +537,638 @@
    "tolerance": 0.05
   },
   {
+   "claim": "suspect trials, both partition runs",
+   "computed": 0,
+   "ok": true,
+   "printed": 0,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "named-arm trials",
+   "computed": 48,
+   "ok": true,
+   "printed": 48,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "no partition: median largest natural gap (ms)",
+   "computed": 5.0,
+   "ok": true,
+   "printed": 5,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "no partition: largest natural gap, max (ms)",
+   "computed": 6.0,
+   "ok": true,
+   "printed": 6,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "brief: median partition (ms)",
+   "computed": 2500.3,
+   "ok": true,
+   "printed": 2500,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "brief: median outage (ms)",
+   "computed": 2526.0,
+   "ok": true,
+   "printed": 2526,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "brief: shortest outage (ms)",
+   "computed": 2409.0,
+   "ok": true,
+   "printed": 2409,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "brief: longest outage (ms)",
+   "computed": 2624.0,
+   "ok": true,
+   "printed": 2624,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "brief: trials in which leadership moved",
+   "computed": 0,
+   "ok": true,
+   "printed": 0,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "brief: returning leader refused by the fence",
+   "computed": 0,
+   "ok": true,
+   "printed": 0,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "long: median partition (ms)",
+   "computed": 10000.3,
+   "ok": true,
+   "printed": 10000,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "long: median outage (ms)",
+   "computed": 4375.5,
+   "ok": true,
+   "printed": 4376,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "long: shortest outage (ms)",
+   "computed": 3537.0,
+   "ok": true,
+   "printed": 3537,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "long: longest outage (ms)",
+   "computed": 4955.0,
+   "ok": true,
+   "printed": 4955,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "long: trials in which leadership moved",
+   "computed": 12,
+   "ok": true,
+   "printed": 12,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "long: returning leader refused by the fence",
+   "computed": 11,
+   "ok": true,
+   "printed": 11,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "flapping: median partition (ms)",
+   "computed": 15409.8,
+   "ok": true,
+   "printed": 15410,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "flapping: median outage (ms)",
+   "computed": 774.0,
+   "ok": true,
+   "printed": 774,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "flapping: shortest outage (ms)",
+   "computed": 442.0,
+   "ok": true,
+   "printed": 442,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "flapping: longest outage (ms)",
+   "computed": 808.0,
+   "ok": true,
+   "printed": 808,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "flapping: trials in which leadership moved",
+   "computed": 7,
+   "ok": true,
+   "printed": 7,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "flapping: returning leader refused by the fence",
+   "computed": 7,
+   "ok": true,
+   "printed": 7,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "long: outages inside the crash window [3.5 s, 6.0 s]",
+   "computed": 12,
+   "ok": true,
+   "printed": 12,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "flapping: cuts per trial",
+   "computed": 11.0,
+   "ok": true,
+   "printed": 11,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "flapping: largest dispatch gap anywhere in the arm (ms)",
+   "computed": 1720.0,
+   "ok": true,
+   "printed": 1720,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "flapping: most leadership terms in any trial",
+   "computed": 2,
+   "ok": true,
+   "printed": 2,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "flapping: every replaced leader was fenced (1 = true)",
+   "computed": 1.0,
+   "ok": true,
+   "printed": 1,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "named partitioned trials",
+   "computed": 36,
+   "ok": true,
+   "printed": 36,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "named partitioned trials ending with exactly one leader",
+   "computed": 36,
+   "ok": true,
+   "printed": 36,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "epoch inversions across all partition trials",
+   "computed": 0,
+   "ok": true,
+   "printed": 0,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "duplicate completions across all partition trials",
+   "computed": 0,
+   "ok": true,
+   "printed": 0,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "tasks unfinished across all partition trials",
+   "computed": 0,
+   "ok": true,
+   "printed": 0,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "sweep trials",
+   "computed": 56,
+   "ok": true,
+   "printed": 56,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "sweep 0.25x: median partition (ms)",
+   "computed": 1250.3,
+   "ok": true,
+   "printed": 1250,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 0.25x: median outage (ms)",
+   "computed": 1306.5,
+   "ok": true,
+   "printed": 1307,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 0.25x: shortest outage (ms)",
+   "computed": 1227.0,
+   "ok": true,
+   "printed": 1227,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 0.25x: longest outage (ms)",
+   "computed": 1414.0,
+   "ok": true,
+   "printed": 1414,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 0.25x: trials in which leadership moved",
+   "computed": 0,
+   "ok": true,
+   "printed": 0,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "sweep 0.25x: returning leader refused by the fence",
+   "computed": 0,
+   "ok": true,
+   "printed": 0,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "sweep 0.5x: median partition (ms)",
+   "computed": 2500.3,
+   "ok": true,
+   "printed": 2500,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 0.5x: median outage (ms)",
+   "computed": 2546.0,
+   "ok": true,
+   "printed": 2546,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 0.5x: shortest outage (ms)",
+   "computed": 2369.0,
+   "ok": true,
+   "printed": 2369,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 0.5x: longest outage (ms)",
+   "computed": 2613.0,
+   "ok": true,
+   "printed": 2613,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 0.5x: trials in which leadership moved",
+   "computed": 0,
+   "ok": true,
+   "printed": 0,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "sweep 0.5x: returning leader refused by the fence",
+   "computed": 0,
+   "ok": true,
+   "printed": 0,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "sweep 0.75x: median partition (ms)",
+   "computed": 3750.2,
+   "ok": true,
+   "printed": 3750,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 0.75x: median outage (ms)",
+   "computed": 3743.0,
+   "ok": true,
+   "printed": 3743,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 0.75x: shortest outage (ms)",
+   "computed": 3703.0,
+   "ok": true,
+   "printed": 3703,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 0.75x: longest outage (ms)",
+   "computed": 3864.0,
+   "ok": true,
+   "printed": 3864,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 0.75x: trials in which leadership moved",
+   "computed": 2,
+   "ok": true,
+   "printed": 2,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "sweep 0.75x: returning leader refused by the fence",
+   "computed": 2,
+   "ok": true,
+   "printed": 2,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "sweep 1.0x: median partition (ms)",
+   "computed": 5000.35,
+   "ok": true,
+   "printed": 5000,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 1.0x: median outage (ms)",
+   "computed": 4377.5,
+   "ok": true,
+   "printed": 4378,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 1.0x: shortest outage (ms)",
+   "computed": 3697.0,
+   "ok": true,
+   "printed": 3697,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 1.0x: longest outage (ms)",
+   "computed": 4955.0,
+   "ok": true,
+   "printed": 4955,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 1.0x: trials in which leadership moved",
+   "computed": 8,
+   "ok": true,
+   "printed": 8,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "sweep 1.0x: returning leader refused by the fence",
+   "computed": 8,
+   "ok": true,
+   "printed": 8,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "sweep 1.5x: median partition (ms)",
+   "computed": 7500.3,
+   "ok": true,
+   "printed": 7500,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 1.5x: median outage (ms)",
+   "computed": 4327.5,
+   "ok": true,
+   "printed": 4328,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 1.5x: shortest outage (ms)",
+   "computed": 3529.0,
+   "ok": true,
+   "printed": 3529,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 1.5x: longest outage (ms)",
+   "computed": 4906.0,
+   "ok": true,
+   "printed": 4906,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 1.5x: trials in which leadership moved",
+   "computed": 8,
+   "ok": true,
+   "printed": 8,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "sweep 1.5x: returning leader refused by the fence",
+   "computed": 7,
+   "ok": true,
+   "printed": 7,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "sweep 2.0x: median partition (ms)",
+   "computed": 10000.3,
+   "ok": true,
+   "printed": 10000,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 2.0x: median outage (ms)",
+   "computed": 4465.0,
+   "ok": true,
+   "printed": 4465,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 2.0x: shortest outage (ms)",
+   "computed": 4181.0,
+   "ok": true,
+   "printed": 4181,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 2.0x: longest outage (ms)",
+   "computed": 4733.0,
+   "ok": true,
+   "printed": 4733,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 2.0x: trials in which leadership moved",
+   "computed": 8,
+   "ok": true,
+   "printed": 8,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "sweep 2.0x: returning leader refused by the fence",
+   "computed": 6,
+   "ok": true,
+   "printed": 6,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "sweep 3.0x: median partition (ms)",
+   "computed": 15000.3,
+   "ok": true,
+   "printed": 15000,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 3.0x: median outage (ms)",
+   "computed": 4130.5,
+   "ok": true,
+   "printed": 4131,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 3.0x: shortest outage (ms)",
+   "computed": 3527.0,
+   "ok": true,
+   "printed": 3527,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 3.0x: longest outage (ms)",
+   "computed": 4887.0,
+   "ok": true,
+   "printed": 4887,
+   "section": "4.11",
+   "tolerance": 0.5
+  },
+  {
+   "claim": "sweep 3.0x: trials in which leadership moved",
+   "computed": 8,
+   "ok": true,
+   "printed": 8,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "sweep 3.0x: returning leader refused by the fence",
+   "computed": 5,
+   "ok": true,
+   "printed": 5,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "sweep: trials at or beyond the lease inside the crash window [3.5 s, 6.0 s]",
+   "computed": 32,
+   "ok": true,
+   "printed": 32,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "sweep: failovers below TTL - renew (3.5 s)",
+   "computed": 0,
+   "ok": true,
+   "printed": 0,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "sweep: trials below TTL - renew",
+   "computed": 16,
+   "ok": true,
+   "printed": 16,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
+   "claim": "sweep: trials ending with exactly one leader",
+   "computed": 56,
+   "ok": true,
+   "printed": 56,
+   "section": "4.11",
+   "tolerance": 0
+  },
+  {
    "claim": "EDF deadline miss rate, sleep",
    "computed": 0.0985,
    "ok": true,
@@ -578,17 +1210,17 @@
   },
   {
    "claim": "total experiments",
-   "computed": 1463,
+   "computed": 1567,
    "ok": true,
-   "printed": 1463,
+   "printed": 1567,
    "section": "B",
    "tolerance": 0
   },
   {
    "claim": "total tasks",
-   "computed": 5436000,
+   "computed": 5852000,
    "ok": true,
-   "printed": 5436000,
+   "printed": 5852000,
    "section": "B",
    "tolerance": 0
   }
@@ -673,6 +1305,14 @@
    "report_section": "4.10",
    "rows": 60,
    "title": "This queue against Asynq on identical work"
+  },
+  {
+   "bytes": 46626,
+   "file": "partition.json",
+   "id": "partition",
+   "report_section": "4.11",
+   "rows": 104,
+   "title": "A scheduler partitioned from a Redis that stays up"
   }
  ],
  "generated_by": "scripts/export_site_data.py",
@@ -739,24 +1379,24 @@
     "name": "External baseline against Asynq",
     "runs": "baseline",
     "tasks": 480000
+   },
+   {
+    "experiments": 48,
+    "name": "Scheduler partition, four arms",
+    "runs": "partition",
+    "tasks": 192000
+   },
+   {
+    "experiments": 56,
+    "name": "Partition-length sweep",
+    "runs": "partition-sweep",
+    "tasks": 224000
    }
   ],
   "title": "Every experiment counted, from the data",
-  "total_experiments": 1463,
-  "total_tasks": 5436000
+  "total_experiments": 1567,
+  "total_tasks": 5852000
  },
- "pending": [
-  {
-   "commands": [
-    "make partition PARTITION_REPETITIONS=12",
-    "make partition-sweep RUN=partition-sweep"
-   ],
-   "harness": "cmd/partitionbench",
-   "id": "partition",
-   "reason": "The harness is written and tested. A first named-arm run exists but predates the host-sleep detection added to the harness, and the partition-length sweep was interrupted twice by the laptop sleeping on battery power. Neither is published; both are to be re-run on mains power.",
-   "status": "pending",
-   "title": "A scheduler partitioned from a Redis that stays up"
-  }
- ],
+ "pending": [],
  "schema_version": 1
 }

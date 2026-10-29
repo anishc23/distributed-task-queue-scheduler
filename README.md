@@ -1786,6 +1786,57 @@ the 2 s that looks better in this table.
 
 ![Failover time against lease TTL](docs/images/failover_ttl_sensitivity.png)
 
+### Cut off from a Redis that stays up
+
+A killed leader writes nothing and a frozen one observes nothing. A leader
+partitioned from a healthy Redis keeps running, watches every call fail, and
+still cannot tell whether Redis is unreachable or it has already been replaced.
+`cmd/partitionbench` puts each scheduler behind its own proxy
+(`internal/netfault`) and severs the leader's path at the socket while Redis,
+the workers and the standby carry on.
+
+```bash
+make partition PARTITION_REPETITIONS=12 RUN=partition
+make partition-sweep RUN=partition-sweep
+make partition-plots RUN=partition SWEEP_RUN=partition-sweep
+```
+
+| partition | n | median outage | leadership moved | returning leader fenced |
+| --- | ---: | ---: | ---: | ---: |
+| none *(natural gap)* | 12 | 5 ms | 0 / 12 | — |
+| 2.5 s, half the lease | 12 | **2,526 ms** | **0 / 12** | 0 / 12 |
+| 10 s, twice the lease | 12 | **4,376 ms** | 12 / 12 | **11 / 12** |
+| cut and healed 11 times in 15.4 s | 12 | 774 ms | 7 / 12 | 7 / 12 |
+
+**A blip shorter than the lease costs its own length and no failover.** The
+lease retries rather than standing down on the first failed renewal, which is
+what keeps a 2.5 s hiccup from costing a 4.4 s failover.
+
+**A partition longer than the lease costs a crash, not the partition.** All
+twelve 10 s partitions recovered inside the `[3.5 s, 6.0 s]` window a crash
+does. When the path came back, the old leader — still running, still sure it
+led — reached Redis with a stale write and **was refused by the fence in 11 of
+12 trials**. Being awake through the partition did not help it notice sooner.
+
+**A path that will not settle does not cause a storm.** Leadership moved at
+most once per trial, every replaced leader was fenced, and no dispatch gap
+exceeded 1.72 s.
+
+**The lease caps what a partition of any length costs.** Sweeping seven
+lengths from a quarter of the lease to three times it (8 trials each), the
+outage tracks the partition up to 3.75 s and then stops growing: 5 s cost a
+median 4,378 ms, 15 s cost 4,131 ms, and all 32 trials at or beyond the lease
+fell inside the crash window. Leadership never moved below `TTL − renew`
+(0 of 16) and always moved at or beyond the TTL (32 of 32).
+
+![A partition costs its own length until the lease caps it](docs/images/partition_sweep.png)
+
+Exactly one leader after every heal, no dispatch under a superseded epoch, no
+duplicate completion, every task finished. Each trial also watches for the host
+sleeping and marks such trials suspect; none was.
+
+![What a partition costs](docs/images/partition.png)
+
 ### Repetitions matter
 
 How many repetitions a workload needs varies across the matrix. All four
@@ -2086,10 +2137,10 @@ that has never been seen to fail is not evidence that the thing it guards works.
   of the fairness cost of partitioning. Leader election makes the scheduler
   *available*; it does not make it *scalable*, and sharding is the only way to
   get past one process without giving up global ordering.
-- Partitioning a scheduler from a healthy Redis. Scheduler failure is measured,
-  including a leader frozen rather than killed, and store failure is measured
-  under Sentinel — but not a scheduler cut off from a master that stays up. The
-  fault-injecting proxy built for the store experiment already supports it.
+- Composing the faults. A scheduler cut off from a healthy Redis and a Redis
+  that fails over under a connected scheduler are each measured, but not both
+  at once, and workers are never partitioned. The fault-injecting proxy both
+  experiments share would do it.
 - Real task bodies alongside the simulated ones, to check how far the
   sleep-based conclusions transfer.
 - Latency-aware autoscaling driven by `tq_pending_tasks` and

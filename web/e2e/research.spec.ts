@@ -5,8 +5,8 @@ test.describe("research site", () => {
     await page.goto("/");
     await expect(page.getByRole("heading", { level: 1 })).toContainText("scheduling policy is an experimental variable");
     const facts = page.locator(".facts");
-    await expect(facts).toContainText("1,463");
-    await expect(facts).toContainText("5.44 M");
+    await expect(facts).toContainText("1,567");
+    await expect(facts).toContainText("5.85 M");
     await expect(page.getByText(/of \d+ numbers quoted in the report are recomputed/)).toBeVisible();
   });
 
@@ -86,12 +86,15 @@ test.describe("research site", () => {
     await expect(page.locator("#fig-asynq")).toHaveCount(0);
   });
 
-  test("the pending experiment is shown as pending, with no figure", async ({ page }) => {
-    await page.goto("/#limitations");
-    const note = page.locator("#limitations .note.pending");
-    await expect(note).toContainText("Pending");
-    await expect(note).toContainText("partitioned from a Redis");
-    await expect(page.locator("#limitations figure")).toHaveCount(0);
+  test("the partition experiment is published, not pending", async ({ page }) => {
+    await page.goto("/#partition");
+    await expect(page.getByRole("heading", { name: "A scheduler cut off from a Redis that stays up" })).toBeVisible();
+    await expect(page.locator("#fig-partition svg")).toBeVisible();
+    await expect(page.locator("#fig-partition-sweep svg")).toBeVisible();
+    const fig = page.locator("#fig-partition");
+    await fig.getByText("Numbers behind this chart").click();
+    await expect(fig.getByRole("row", { name: /long/ })).toContainText("12/12");
+    await expect(page.locator("#limitations .note.pending")).toHaveCount(0);
   });
 
   test("keyboard: the skip link reaches the content and controls are buttons", async ({ page }) => {

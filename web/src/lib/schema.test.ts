@@ -5,7 +5,7 @@ import { type DatasetId, ValidationError, validateDataset, validateIndex } from 
 
 const DATA = join(__dirname, "..", "..", "public", "data");
 const load = (f: string) => JSON.parse(readFileSync(join(DATA, f), "utf8")) as Record<string, unknown>;
-const IDS: DatasetId[] = ["sweep", "matrix", "control", "priority", "tenants", "realwork", "ceiling", "failover", "storefault", "baseline"];
+const IDS: DatasetId[] = ["sweep", "matrix", "control", "priority", "tenants", "realwork", "ceiling", "failover", "storefault", "baseline", "partition"];
 
 describe("the committed datasets", () => {
   it.each(IDS)("%s validates against its schema", (id) => {
@@ -51,6 +51,14 @@ describe("the committed datasets", () => {
   it("failover: the single-writer invariant held in every published trial", () => {
     const ds = validateDataset("failover", load("failover.json"));
     expect(ds.rows.reduce((s, r) => s + r.epoch_inversions, 0)).toBe(0);
+  });
+
+  it("partition: the single-writer invariant held, and suspect trials stay flagged", () => {
+    const ds = validateDataset("partition", load("partition.json"));
+    expect(ds.rows.reduce((s, r) => s + r.epoch_inversions, 0)).toBe(0);
+    for (const r of ds.rows.filter((x) => x.partition_ms > 0 && !x.suspect)) expect(r.leaders_after_heal).toBe(1);
+    for (const r of ds.rows.filter((x) => x.partition_ms === 0)) expect(r.outage_ms).toBeNull();
+    expect(ds.caveats.join(" ")).toMatch(/suspect/);
   });
 
   it("matrix: the bursty load caveat travels with the data", () => {

@@ -14,7 +14,7 @@ priority, earliest deadline first (EDF) and weighted fair queuing (WFQ) — were
 compared across four synthetic workloads, seven levels of offered load, and two
 models of task execution.
 
-The study comprises **1,463 experiments over 5.44 million tasks**. Four results
+The study comprises **1,567 experiments over 5.85 million tasks**. Four results
 are reported. First, scheduling policy is decisive only in a narrow band around
 service capacity: the spread between the best and worst policy's 99th-percentile
 latency is 0.1% at half capacity, peaks at 93% at capacity, and falls to 1.1% at
@@ -36,7 +36,11 @@ refused the returning leader in 11 of 15 trials. Pushed one level further, the
 fence turns out to inherit the durability of the store beneath it: a Redis
 failover to a lagging replica issued one fencing token to two leaders in 10
 trials out of 10, and the fix is a store setting rather than a scheduler
-change. Measured against Asynq, an external queue with no central scheduler,
+change. Cut off from a Redis that stays up, rather than stopped, a leader kept
+its role through any partition shorter than its lease, lost it to a standby
+after one longer, and was refused by the fence on its return in 11 of 12
+trials. Across seven partition lengths the outage grew with the partition only
+until the lease ran out, and stayed inside a crash's window from then on. Measured against Asynq, an external queue with no central scheduler,
 the architecture costs about 30% of throughput on tasks shorter than three
 milliseconds and nothing measurable on tasks of five milliseconds or more.
 
@@ -886,6 +890,160 @@ carefully, on one machine.
 ![This queue against Asynq](images/baseline.png)
 
 
+### 4.11 A scheduler cut off from a Redis that stays up
+
+Sections 4.7 to 4.9 leave one fault shape untested, and it is the one in which
+the leader knows the most and can do the least. A killed leader writes nothing.
+A frozen one, in 4.8, observes nothing, and resumes with its connection intact.
+A leader partitioned from a healthy Redis keeps running, watches every call
+fail, and still cannot tell whether the store is merely unreachable or it has
+already been replaced. Those two situations call for opposite responses.
+Standing down on the first failed round trip turns every transient blip into a
+failover; carrying on regardless is how two schedulers end up dispatching. This
+queue does neither: the lease keeps retrying, and the fence makes the ambiguity
+harmless if it turns out the leader was replaced.
+
+**Method.** `cmd/partitionbench` starts two real scheduler processes, as 4.7
+does, but each reaches Redis through its own proxy (`internal/netfault`), the
+one built for 4.9. Cutting a proxy closes its open connections and refuses new
+ones, so the leader's path is severed at the socket while Redis, the workers,
+the harness and the standby all keep theirs. The cut lands 3 s into the trial
+plus a seeded jitter of up to one renewal interval, for the reason given in
+4.7. After the path is repaired the replica that was cut off is given 4 s to act
+before the harness reads the lease holder, scrapes the fence-refusal counter
+from that replica, and checks that exactly one replica claims leadership. The
+dispatch log is replayed for epoch inversions as in every failover run. Load,
+lease and poll settings are those of 4.7: 4,000 tasks at 400/s, 20 ms each, 32
+worker slots, a 5 s lease renewed every 1.5 s, a 1 s standby poll.
+
+| arm | partition | what it answers |
+| --- | --- | --- |
+| `none` | — | the natural gap between dispatches |
+| `brief` | half the lease, 2.5 s | does a blip shorter than the lease cost a failover? It should not |
+| `long` | twice the lease, 10 s | is the leader replaced, and refused when it comes back? |
+| `flapping` | 700 ms cut, 700 ms healed, for 3 × the lease | does a path that cannot settle cause a split brain, or a storm of leadership changes? |
+
+*The host is watched, not trusted.* Two earlier attempts at this experiment were
+run on battery power, and macOS slept the machine partway through. A suspended
+host freezes both replicas mid-handover; they wake with stale gauges that scrape
+as two leaders, and a gap in the dispatch record that reads as an outage. Each
+trial therefore measures the host's own suspension directly
+(`internal/hostclock`), and marks any trial in which the machine slept as
+suspect. Suspect trials are dropped and counted, never averaged. Both runs
+reported here were made on mains power under `caffeinate`, and **no trial in
+either was suspect**. The earlier attempts are discarded and not counted.
+
+**Results** (12 trials per arm, 48 in all):
+
+| arm | n | partition | median outage | range | leadership moved | refused by the fence on heal |
+| --- | ---: | ---: | ---: | --- | ---: | ---: |
+| `none` | 12 | — | 5 ms *(largest natural gap)* | 5–6 ms | 0 / 12 | — |
+| `brief` | 12 | 2,500 ms | **2,526 ms** | 2,409–2,624 ms | **0 / 12** | 0 / 12 |
+| `long` | 12 | 10,000 ms | **4,376 ms** | 3,537–4,955 ms | **12 / 12** | **11 / 12** |
+| `flapping` | 12 | 15,410 ms, 11 cuts | 774 ms | 442–808 ms | 7 / 12 | 7 / 12 |
+
+In every one of the 36 partitioned trials exactly one replica claimed
+leadership once the path was repaired. Across all 48, no task was dispatched
+under a superseded epoch, none was completed twice, and every trial finished
+all 4,000 tasks.
+
+**A partition shorter than the lease costs its own length, and nothing else.**
+The `brief` arm's outage is the partition: a median of 2,526 ms against a cut of
+2,500 ms. Leadership did not move in any of the twelve trials. The leader's
+renewals failed for two and a half seconds, it kept its grant because the grant
+had not expired, and it resumed dispatching the moment it could. That is the
+behaviour the retry policy exists for. A lease that stood down on its first
+failed renewal would have turned each of these trials into a failover and cost
+a crash's worth of outage, about 4.4 s, for a 2.5 s blip.
+
+**A partition longer than the lease costs a crash, not the partition.** In the
+`long` arm the path was down for 10 s and dispatch resumed after a median of
+4,376 ms, because the standby took over in all twelve trials. **All twelve
+outages fall inside the `[3.5 s, 6.0 s]` window Section 4.7's two-term model
+predicts for a crash**, and the distribution sits where the crash arm's did
+(median 4,362 ms there). From the queue's point of view a partitioned leader
+whose lease expires is a dead one: it stopped renewing, and Redis does not
+distinguish why. The remaining 5.6 s of partition cost nothing, because by then
+somebody else was dispatching.
+
+**The fence is what refused the leader that came back.** When the path was
+repaired, the old leader was still running and still believed it led. In
+**11 of 12 trials** it reached Redis with a write under its old epoch before its
+own lease machinery had concluded anything, and Redis refused it; in the twelfth
+its lease renewal failed first and it stood down without trying. This is the same split Section 4.8 found for a
+frozen leader, 11 of 15, and it carries the same reading: a deployment with a
+lease but no fence would have admitted a second writer in eleven of these twelve
+trials. The difference from 4.8 is that a partitioned leader is not asleep. It
+spent the partition awake, watching its renewals fail, and still reached Redis
+with a stale write before it concluded anything. Being awake does not help a
+process answer a question it has no way to answer from inside.
+
+**A path that will not settle does not cause a storm.** The `flapping` arm cut
+the path eleven times in 15.4 s. Leadership moved in 7 of 12 trials and stayed
+put in the other 5, and in no trial did it move more than once: the epoch
+counter ended at 2 or at 1 every time. Every leader that was replaced was
+refused by the fence when it next reached Redis, 7 of 7. The largest dispatch
+gap anywhere in the arm was 1,720 ms: dispatch carried on through each healed
+half-period, and a handover, when one happened, did not open a gap of its own
+longer than that. Whether a given trial fails over depends on how the 700 ms
+flap happens to line up with the 1.5 s renewal, so 7 of 12 is a property of
+these two periods and is not offered as a rate.
+
+**The lease, not the partition, bounds what a partition costs.** The named
+arms test one length either side of the lease. A second run sweeps seven
+lengths, from a quarter of the lease to three times it, 8 trials each, with
+everything else unchanged:
+
+| partition | n | median outage | range | leadership moved | refused by the fence on heal |
+| ---: | ---: | ---: | --- | ---: | ---: |
+| 1,250 ms (0.25×) | 8 | 1,307 ms | 1,227–1,414 ms | 0 / 8 | 0 / 8 |
+| 2,500 ms (0.5×) | 8 | 2,546 ms | 2,369–2,613 ms | 0 / 8 | 0 / 8 |
+| 3,750 ms (0.75×) | 8 | 3,743 ms | 3,703–3,864 ms | 2 / 8 | 2 / 8 |
+| 5,000 ms (1×) | 8 | 4,378 ms | 3,697–4,955 ms | 8 / 8 | 8 / 8 |
+| 7,500 ms (1.5×) | 8 | 4,328 ms | 3,529–4,906 ms | 8 / 8 | 7 / 8 |
+| 10,000 ms (2×) | 8 | 4,465 ms | 4,181–4,733 ms | 8 / 8 | 6 / 8 |
+| 15,000 ms (3×) | 8 | 4,131 ms | 3,527–4,887 ms | 8 / 8 | 5 / 8 |
+
+Up to three quarters of the lease the outage is the partition, to within a few
+per cent. From one lease upward it stops growing: a 15 s partition cost a median
+of 4,131 ms, less than the 5 s one, and **all 32 trials at or beyond the lease
+fall inside the crash window**. Where leadership moves is predicted, not merely
+observed. At the cut the grant has between `TTL − renew` and `TTL` left, 3.5 s
+to 5 s, depending on how long ago it was last renewed. A partition shorter than
+3.5 s therefore cannot cost a failover (0 of 16), one of 5 s or more always does
+(32 of 32), and one in between does or does not according to where in the
+renewal cycle it landed: 2 of 8 at 3.75 s. The cost of a partition of any
+length is capped by the lease, which makes the lease TTL the single setting
+that decides it.
+
+One pattern is reported without being interpreted. The share of returning
+leaders refused by the fence, rather than stopped by their own failed renewal,
+falls as the partition lengthens: 8 of 8 at one lease, then 7, 6 and 5 of 8.
+The lease keeps no clock of its own (a cut-off leader goes on believing it
+leads until a renewal reaches Redis and is told otherwise), so on every heal the
+renewal ticker and the dispatch loop race to be first, and something about a
+long-severed connection evidently shifts that race. What, is not tested, and at
+eight trials per length the trend itself is weakly supported. Both outcomes are
+safe: across all 56 sweep trials there was exactly one leader after every heal,
+no epoch inversion, no duplicate completion and no unfinished task, and none was
+suspect.
+
+![A partition costs its own length until the lease caps it](images/partition_sweep.png)
+
+**What is not claimed.** Every process ran on one host, and the partition is a
+severed socket rather than a real network: this tests how the lease and the
+fence respond to a lost path, not how long a real network takes to fail or how
+a real TCP stack notices. Only the leader's path to Redis is cut. Workers are
+never partitioned, and neither is the standby; a partition that separated
+workers from the store, or one that left the leader able to reach Redis but not
+its workers, is a different experiment. And the fence's guarantee here is
+exactly Section 4.9's: it holds because this Redis does not fail over. Combine
+this partition with a store failover and the two results compose, in the
+direction 4.9 describes.
+
+![What a partition costs](images/partition.png)
+
+
 ## 5. Threats to validity
 
 ### 5.1 Corrections made during this study
@@ -1030,14 +1188,13 @@ work and improved.
    the scale at which these results apply.
 3. **At-least-once only.** Duplicate execution is expected; only completion
    recording is idempotent.
-4. **Fault injection covers processes and the store, not the network between
-   schedulers.** Worker crashes, application errors, scheduler kills, a
-   frozen-then-resumed scheduler, a Redis failover and a severed replication
-   link are all injected. What is not tested is a scheduler partitioned from a
-   Redis that stays up: Section 4.8's frozen leader resumes with its connection
-   intact, and Section 4.9 cuts replication rather than the scheduler's own
-   path to the master. The proxy used in 4.9 would support it; the experiment
-   is not yet written.
+4. **Fault injection covers one path at a time, on one host.** Worker crashes,
+   application errors, scheduler kills, a frozen-then-resumed scheduler, a
+   Redis failover, a severed replication link and a scheduler partitioned from
+   a healthy Redis (Section 4.11) are all injected, but separately. A partition
+   that coincides with a store failover, a partition between workers and the
+   store, and an asymmetric partition are not tested, and every partition here
+   is a socket closed by a local proxy rather than a real network failing.
 5. **One external baseline, on one axis.** Section 4.10 compares against Asynq,
    which shares this project's language and store and differs mainly in having
    no central scheduler. There is no comparison against Celery, Sidekiq or
@@ -1130,13 +1287,14 @@ to quantify what self-clocking costs; a tenant-sharded scheduler to lift the
 single-writer bound; and latency-aware autoscaling driven by queue depth rather
 than CPU.
 
-Sections 4.7 to 4.9 add two of their own. **Partitioning a scheduler from a
-healthy Redis**, which is the one fault shape still untested: 4.8 freezes a
-process that keeps its connection, and 4.9 cuts replication rather than the
-scheduler's own path to the master. The fault-injecting proxy built for 4.9
-already supports it. And **a release notification**: a graceful handover
-currently costs up to one standby poll interval, which is a polling artefact
-rather than anything fundamental, and publishing on release would remove it.
+Sections 4.7 to 4.11 add two of their own. **Composing the faults**: Section
+4.11 partitions a scheduler from a Redis that stays up and 4.9 fails Redis over
+under a scheduler that stays connected, but no experiment yet does both at
+once, or partitions workers rather than schedulers. The harnesses for both
+already share the proxy that would do it. And **a release notification**: a
+graceful handover currently costs up to one standby poll interval, which is a
+polling artefact rather than anything fundamental, and publishing on release
+would remove it.
 
 ## Appendix A: Reproducing these results
 
@@ -1170,15 +1328,24 @@ make storefault STOREFAULT_REPETITIONS=10 RUN=storefault
 # enters the shipped library's dependency graph.
 make baseline BASELINE_REPETITIONS=5 RUN=baseline
 
+# Section 4.11: a scheduler partitioned from a Redis that stays up, by arm and
+# against partition length. Timing runs: mains power, idle machine.
+make partition PARTITION_REPETITIONS=12 RUN=partition
+make partition-sweep RUN=partition-sweep
+
 make plots RUN=main && make sweep-plots RUN=sweep-loads
 make failover-plots RUN=failover
 make storefault-plots RUN=storefault
 make baseline-plots RUN=baseline
+make partition-plots RUN=partition SWEEP_RUN=partition-sweep
 ```
 
-The failover runs start real scheduler processes and kill them, so they need a
-machine that is otherwise idle: the outage is a timing measurement, and
-anything else competing for CPU shows up in it.
+The failover and partition runs start real scheduler processes and kill or
+isolate them, so they need a machine that is otherwise idle: the outage is a
+timing measurement, and anything else competing for CPU shows up in it. On a
+laptop they also need mains power. Both harnesses detect a host that slept and
+mark the trial suspect, but a run on battery can lose most of its trials that
+way.
 
 Source, configurations and full result schemas:
 <https://github.com/anishc23/distributed-task-queue-scheduler>
@@ -1197,11 +1364,15 @@ Source, configurations and full result schemas:
 | Failover, lease-TTL sensitivity | 24 | 96,000 |
 | Store failure under Sentinel, four arms | 40 | 80,000 |
 | External baseline against Asynq | 60 | 480,000 |
-| **Total** | **1,463** | **5,436,000** |
+| Scheduler partition, four arms | 48 | 192,000 |
+| Partition-length sweep | 56 | 224,000 |
+| **Total** | **1,567** | **5,852,000** |
 
 Failover rows count tasks *submitted*: the single-replica control arm leaves a
 median of 2,613 per trial permanently unscheduled, which is the result rather
 than a defect of the accounting. Two further failover runs were discarded for
-the reasons given in Section 3.4 and are not counted here. The scheduler-ceiling
+the reasons given in Section 3.4 and are not counted here, nor are the earlier
+partition attempts that Section 4.11 describes, which a sleeping host
+contaminated. The scheduler-ceiling
 measurements of Section 4.6 are also excluded, since they drive the critical
 path directly rather than running experiments.

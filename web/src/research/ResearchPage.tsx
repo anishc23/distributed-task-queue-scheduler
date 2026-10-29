@@ -9,6 +9,7 @@ import { Cost } from "./Cost";
 import { Failover } from "./Failover";
 import { Fencing } from "./Fencing";
 import { StoreFault } from "./StoreFault";
+import { Partition } from "./Partition";
 import { RealWork } from "./RealWork";
 import { Corrections } from "./Corrections";
 import { Limitations } from "./Limitations";
@@ -25,6 +26,7 @@ const SECTIONS: { group?: string; id: string; label: string }[] = [
   { group: "Failure", id: "failover", label: "Scheduler failover" },
   { id: "fencing", label: "Why the fence exists" },
   { id: "store", label: "When Redis fails over" },
+  { id: "partition", label: "Cut off from Redis" },
   { group: "Validity", id: "realwork", label: "Sleep is not neutral" },
   { id: "corrections", label: "Corrections" },
   { id: "limitations", label: "Limitations and open work" },
@@ -114,6 +116,7 @@ export function ResearchPage() {
         <Failover />
         <Fencing />
         <StoreFault />
+        <Partition />
         <RealWork />
         <Corrections />
         <Limitations />

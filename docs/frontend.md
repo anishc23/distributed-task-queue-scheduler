@@ -309,5 +309,6 @@ console reports a real failover correctly is the Go integration tests' job, beca
 - History lives in the console's memory, 10 minutes long, and is lost when it stops. It is not Prometheus.
 - Demo processes share one machine, as in every experiment in the report, so the network is never in the failover
   path.
-- The research site shows only experiments whose results reproduce. The scheduler-partition experiment
-  (`cmd/partitionbench`) is listed as pending and has no numbers on the site until it is re-run on mains power.
+- The research site shows only experiments whose results reproduce. An experiment whose results are not yet
+  publishable is listed under `PENDING` in `scripts/export_site_data.py` and appears on the site as pending, with no
+  numbers.
