@@ -52,6 +52,10 @@ async function mock(page: Page, opts: { status?: (r: Route) => Promise<void>; on
         return json({ console: info(), samples: [] });
       case "/api/v1/dispatches":
         return json({ read_at: now(), from_ms: Date.now() - 90_000, window_s: 90, bucket_ms: 250, count: 0, truncated: false, buckets: [], epochs: [], unstamped: 0, epoch_inversions: 0, gaps: [] });
+      case "/api/v1/tenants":
+        return json({ read_at: now(), window_s: 120, count: 30, truncated: false, tenants: [
+          { tenant: "A", completed: 27, latency_p50_ms: 2400, latency_p95_ms: 2900, latency_max_ms: 3100, deadline_missed: 20 },
+          { tenant: "B", completed: 3, latency_p50_ms: 60, latency_p95_ms: 78, latency_max_ms: 80, deadline_missed: 0 } ] });
       case "/api/v1/dlq":
         return json({ read_at: now(), entries: [] });
     }
@@ -77,6 +81,9 @@ test.describe("live console page", () => {
     await expect(page.locator(".kpis")).toContainText("150");
     await expect(page.getByText("exactly one", { exact: true })).toBeVisible();
     await expect(page.getByText("became scheduler leader (epoch 3)")).toBeVisible();
+    const tenants = page.locator("section", { has: page.getByRole("heading", { name: /^Tenants/ }) });
+    await expect(tenants.getByRole("row", { name: /^B/ })).toContainText("78 ms");
+    await expect(tenants.getByRole("heading")).toContainText("policy wfq");
   });
 
   test("a console that stops answering is shown as not current, with its last data greyed", async ({ page }) => {

@@ -43,6 +43,11 @@ export function Walkthrough({ mode, faults }: { mode: string | null; faults: boo
           fail and a standby takes over, but it keeps reporting itself leader. The claim count shows two. When the link
           heals, its first write is refused. The dispatch log's inversion count stays at zero throughout.
         </li>
+        <li>
+          <strong>Optional: compare policies.</strong> Submit "Noisy neighbour" and read the tenants panel. Restart
+          the console with <code>make console-demo POLICY=fifo</code> and repeat. Under WFQ the small tenants' p95 stays far below
+          tenant A's; under FIFO it matches A's (research: <a href="#isolation">tenant isolation</a>).
+        </li>
       </ol>
       <p className="tiny muted">
         What this does not show: all processes share one machine, so the network is not in the failover path, and

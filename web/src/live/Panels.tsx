@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { ConsoleEvent, DeadLetter, Snapshot } from "./api";
+import type { ConsoleEvent, DeadLetter, Snapshot, TenantWindow } from "./api";
 import { healthText, leaderVerdict } from "./connection";
 import type { LiveData } from "./useConsole";
 import { fmt, fmtInt } from "../lib/format";
@@ -147,7 +147,7 @@ export function Processes({ snap, now }: { snap: Snapshot; now: number }) {
       <h2 id="proc-h" className="panel-h">
         Processes
       </h2>
-      <div className="table-scroll">
+      <div className="table-scroll" tabIndex={0}>
         <Table
           caption="Process health"
           head={["process", "health", "process state", "leads", "last answered"]}
@@ -259,7 +259,7 @@ export function DeadLetters({ entries, error }: { entries: DeadLetter[] | null; 
       ) : entries.length === 0 ? (
         <p className="small muted">Empty: no task has exhausted its retry budget.</p>
       ) : (
-        <div className="table-scroll">
+        <div className="table-scroll" tabIndex={0}>
           <Table
             caption="Dead letters"
             head={["task", "tenant", "attempts", "failed at", "reason"]}
@@ -272,3 +272,42 @@ export function DeadLetters({ entries, error }: { entries: DeadLetter[] | null; 
     </section>
   );
 }
+
+export function Tenants({ window: w, policy }: { window: TenantWindow | null; policy?: string }) {
+  const total = w ? w.tenants.reduce((s, t) => s + t.completed, 0) : 0;
+  return (
+    <section className="panel" aria-labelledby="ten-h">
+      <h2 id="ten-h" className="panel-h">
+        Tenants · last {w?.window_s ?? 120} s{policy ? ` · policy ${policy}` : ""}
+      </h2>
+      {!w ? (
+        <p className="small muted">Reading the results stream…</p>
+      ) : w.tenants.length === 0 ? (
+        <p className="small muted">No task completed in this window.</p>
+      ) : (
+        <div className="table-scroll" tabIndex={0}>
+          <Table
+            caption="Completions per tenant"
+            head={["tenant", "completed", "share", "p50 latency", "p95 latency", "deadline missed"]}
+            numeric={[1, 2, 3, 4, 5]}
+            rows={w.tenants.map((t) => [
+              <strong>{t.tenant}</strong>,
+              fmtInt(t.completed),
+              total ? `${((t.completed / total) * 100).toFixed(0)}%` : "—",
+              `${fmtInt(t.latency_p50_ms)} ms`,
+              `${fmtInt(t.latency_p95_ms)} ms`,
+              t.completed ? `${((t.deadline_missed / t.completed) * 100).toFixed(0)}%` : "—",
+            ])}
+          />
+        </div>
+      )}
+      <p className="tiny muted">
+        From the results stream: every task completed in the window, by tenant, with its latency from submission to
+        completion.{w?.truncated ? " The read was capped, so the oldest part of the window is missing." : ""} Under the
+        noisy-neighbour workload, compare the small tenants' p95 with tenant A's: with WFQ they stay low; with FIFO
+        they queue behind A.
+      </p>
+    </section>
+  );
+}
+

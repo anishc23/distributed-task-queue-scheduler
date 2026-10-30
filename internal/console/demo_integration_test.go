@@ -183,6 +183,24 @@ func TestDemoReportsAKilledLeaderAndItsSuccessor(t *testing.T) {
 		t.Errorf("max dispatch gap %v ms; a crash with a 2 s lease should leave a gap of over a second", deref(w.MaxGapMS))
 	}
 
+	// The per-tenant view is read from the results stream: every completion in
+	// the window, attributed to its tenant, with a latency that is positive.
+	results, err := d.br.ResultsSince(context.Background(), time.Now().Add(-2*time.Minute), resultsCap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := SummariseTenants(results, 2*time.Minute, resultsCap)
+	total := 0
+	for _, ts := range tw.Tenants {
+		total += ts.Completed
+		if ts.LatencyP50MS <= 0 || ts.LatencyP95MS < ts.LatencyP50MS {
+			t.Errorf("tenant %s has implausible latency: %+v", ts.Tenant, ts)
+		}
+	}
+	if total == 0 || total != len(results) {
+		t.Errorf("tenant completions sum to %d over %d results", total, len(results))
+	}
+
 	if _, err := d.sup.Apply(FaultRequest{Action: ActionRestart, Target: victim}, ""); err != nil {
 		t.Fatal(err)
 	}

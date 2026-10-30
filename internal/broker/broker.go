@@ -809,6 +809,27 @@ func (b *Broker) DispatchesSince(ctx context.Context, since time.Time, count int
 	return out, nil
 }
 
+// ResultsSince returns completion records added to the results stream at or
+// after since, oldest first, at most count of them. Like the execution
+// stream, the results stream is keyed by time, so a window is one range read.
+func (b *Broker) ResultsSince(ctx context.Context, since time.Time, count int64) ([]domain.Result, error) {
+	start := strconv.FormatInt(since.UnixMilli(), 10) + "-0"
+	msgs, err := b.rdb.XRangeN(ctx, b.keys.Results, start, "+", count).Result()
+	if err != nil {
+		return nil, fmt.Errorf("read results: %w", err)
+	}
+	out := make([]domain.Result, 0, len(msgs))
+	for _, m := range msgs {
+		raw, _ := m.Values["result"].(string)
+		r, err := domain.UnmarshalResult(raw)
+		if err != nil {
+			return out, fmt.Errorf("result entry %s: %w", m.ID, err)
+		}
+		out = append(out, r)
+	}
+	return out, nil
+}
+
 // IngressBacklog reports submitted work the scheduler has not yet admitted:
 // entries in the ingress stream its group has never read (unread), and
 // entries read but not yet acknowledged (unacked), which include any stranded

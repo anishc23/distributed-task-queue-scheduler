@@ -103,6 +103,21 @@ export interface DispatchWindow {
   gaps: { start_ms: number; end_ms: number }[];
 }
 
+export interface TenantWindow {
+  read_at: string;
+  window_s: number;
+  count: number;
+  truncated: boolean;
+  tenants: {
+    tenant: string;
+    completed: number;
+    latency_p50_ms: number;
+    latency_p95_ms: number;
+    latency_max_ms: number;
+    deadline_missed: number;
+  }[];
+}
+
 export interface Preset {
   id: string;
   label: string;

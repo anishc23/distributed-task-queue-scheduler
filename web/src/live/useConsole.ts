@@ -8,6 +8,7 @@ import {
   type DispatchWindow,
   type Sample,
   type Snapshot,
+  type TenantWindow,
   get,
 } from "./api";
 import { backoffMs, connectionState, snapshotAgeMs, type Connection } from "./connection";
@@ -19,6 +20,7 @@ export interface LiveData {
   history: Sample[];
   events: ConsoleEvent[];
   dispatches: DispatchWindow | null;
+  tenants: TenantWindow | null;
   controls: Controls | null;
   dlq: DeadLetter[] | null;
   dlqError: string | null;
@@ -45,6 +47,7 @@ export function useConsole(): LiveData {
   const [history, setHistory] = useState<Sample[]>([]);
   const [events, setEvents] = useState<ConsoleEvent[]>([]);
   const [dispatches, setDispatches] = useState<DispatchWindow | null>(null);
+  const [tenants, setTenants] = useState<TenantWindow | null>(null);
   const [controls, setControls] = useState<Controls | null>(null);
   const [dlq, setDlq] = useState<DeadLetter[] | null>(null);
   const [dlqError, setDlqError] = useState<string | null>(null);
@@ -88,12 +91,14 @@ export function useConsole(): LiveData {
           setEvents((prev) => [...prev, ...ev.events].slice(-MAX_EVENTS));
         }
         if (tick % 2 === 0) {
-          const [h, d] = await Promise.all([
+          const [h, d, t] = await Promise.all([
             get<{ samples: Sample[] }>("/history", ctrl.signal),
             get<DispatchWindow>("/dispatches?window_s=90", ctrl.signal, 4000),
+            get<TenantWindow>("/tenants?window_s=120", ctrl.signal, 4000),
           ]);
           setHistory(h.samples);
           setDispatches(d);
+          setTenants(t);
         }
         if (tick % 10 === 0) {
           get<{ entries: DeadLetter[] }>("/dlq?limit=50", ctrl.signal)
@@ -157,6 +162,7 @@ export function useConsole(): LiveData {
     history,
     events,
     dispatches,
+    tenants,
     controls,
     dlq,
     dlqError,

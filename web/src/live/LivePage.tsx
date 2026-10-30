@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useConsole } from "./useConsole";
 import { captureToken, forgetToken, type Snapshot } from "./api";
-import { ConnectionBar, Kpis, Leadership, Processes, Events, DeadLetters } from "./Panels";
+import { ConnectionBar, Kpis, Leadership, Processes, Events, DeadLetters, Tenants } from "./Panels";
 import { HistoryCharts, DispatchLog } from "./LiveCharts";
 import { ControlPanel } from "./ControlPanel";
 import { Walkthrough } from "./Walkthrough";
@@ -68,7 +68,10 @@ export default function LivePage() {
               />
               <Events events={live.events} />
             </div>
-            <DeadLetters entries={live.dlq} error={live.dlqError} />
+            <div className="live-row">
+              <Tenants window={live.tenants} policy={snapshot?.policy} />
+              <DeadLetters entries={live.dlq} error={live.dlqError} />
+            </div>
             <Walkthrough mode={live.info?.mode ?? null} faults={live.controls?.faults_enabled ?? false} />
           </div>
         )}
@@ -88,7 +91,7 @@ function NoConsole({ reason }: { reason: string }) {
         from anywhere else cannot reach one, by design. Fault injection must never be reachable from the internet. To
         see it, run the demo locally:
       </p>
-      <pre className="small">
+      <pre className="small" tabIndex={0}>
         <code>{`make redis-up          # or any local Redis on :6379
 make console-demo      # builds everything, starts 2 schedulers + 2 workers
 # then open the URL it prints: http://127.0.0.1:8088/#/live?token=…`}</code>

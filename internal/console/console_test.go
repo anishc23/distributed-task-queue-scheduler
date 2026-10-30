@@ -254,3 +254,30 @@ func TestLoopbackHostsRefusesOtherInterfaces(t *testing.T) {
 		}
 	}
 }
+
+func TestSummariseTenantsReportsWhatEachTenantExperienced(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	res := func(tenant string, latencyMS int, late bool) domain.Result {
+		r := domain.Result{TenantID: tenant, SubmittedAt: t0, FinishedAt: t0.Add(time.Duration(latencyMS) * time.Millisecond)}
+		r.Deadline = r.FinishedAt.Add(time.Second)
+		if late {
+			r.Deadline = r.FinishedAt.Add(-time.Millisecond)
+		}
+		return r
+	}
+	in := []domain.Result{res("A", 100, false), res("A", 200, false), res("A", 300, true), res("B", 50, false), {TenantID: "B"}}
+	w := SummariseTenants(in, time.Minute, 100)
+	if len(w.Tenants) != 2 || w.Tenants[0].Tenant != "A" {
+		t.Fatalf("tenants = %+v", w.Tenants)
+	}
+	a, b := w.Tenants[0], w.Tenants[1]
+	if a.Completed != 3 || a.LatencyP50MS != 200 || a.LatencyMaxMS != 300 || a.DeadlineMissed != 1 {
+		t.Errorf("A = %+v", a)
+	}
+	if a.LatencyP95MS < 289.9 || a.LatencyP95MS > 290.1 {
+		t.Errorf("A p95 = %v, want 290 by interpolation", a.LatencyP95MS)
+	}
+	if b.Completed != 1 {
+		t.Errorf("a record with no times was counted: B = %+v", b)
+	}
+}

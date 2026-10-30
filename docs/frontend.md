@@ -54,7 +54,7 @@ that produced them, and a table of the plotted numbers.
 
 ```
 results/<run>/*.csv  ──scripts/export_site_data.py──▶  web/public/data/*.json  ──fetch + validate──▶  charts
-   (gitignored, 1.5 GB)        recomputes 74 claims              (committed, ~470 KiB)        (src/lib/schema.ts)
+   (gitignored, 1.5 GB)        recomputes 153 claims             (committed, ~560 KiB)        (src/lib/schema.ts)
 ```
 
 `scripts/export_site_data.py` is the only bridge between the benchmark output and the site. It uses the Python
@@ -166,6 +166,7 @@ All responses are JSON. Reads need only the right `Host` header; writes need eve
 | `GET /api/v1/history` | the last 600 samples (10 min at 1 s): queue depth, rates, lease holder, leader count |
 | `GET /api/v1/events?since=<seq>` | events after a sequence number, each tagged with its source |
 | `GET /api/v1/dispatches?window_s=90` | the dispatch log over a window (10–300 s): 250 ms buckets by epoch, every gap of 1 s or more, the longest gap, epoch inversions |
+| `GET /api/v1/tenants?window_s=120` | completions per tenant over a window (10–600 s), read from the results stream: count, p50 and p95 latency from submission to completion, deadline misses |
 | `GET /api/v1/dlq?limit=50` | dead-letter metadata: task id, tenant, attempts, reason, time. Never the payload |
 | `GET /api/v1/controls` | whether faults are on and why not, allowed actions per role, process states, workload presets |
 | `POST /api/v1/faults` | `{"action": "kill" \| "terminate" \| "freeze" \| "partition" \| "restart", "target": "leader" \| "<name>", "duration_ms": 1000–30000}` |
@@ -187,6 +188,7 @@ JSON; 421 for a foreign `Host`; 502 when Redis could not be read.
 | lease holder, epoch, lease expiry, fence | Redis keys `leader`, `leader_epoch`, `fence` | "unknown" |
 | schedulers claiming to lead | sum of `tq_scheduler_is_leader` over schedulers | "unknown" if any scheduler could not be scraped. A process the supervisor saw exit counts as 0; a frozen one does not, because it may still believe it leads |
 | health | `/healthz` and `/readyz` status codes (see below) | — |
+| tenants | the results stream: every task completed in the window, by tenant; latency is finish minus submit, percentiles interpolated as in the benchmark analysis | "No task completed in this window" |
 | dispatch log | the execution stream itself: every entry's stamped `dispatched_at_ms` and `epoch` | an error in place of the chart |
 | stall or idle | a gap of 1 s or more in the dispatch log is a *stall* if a sample taken during it shows work waiting (pending or not yet admitted), *idle* if every sample shows nothing waiting, and *unknown* if no sample fell inside it or Redis was unreadable. Only stalls count towards "longest stall" | "unknown", never assumed |
 
@@ -272,6 +274,11 @@ The live page has this walkthrough built in; the research section each step corr
 6. **Partition the leader for 10 s.** The process keeps running and keeps reporting itself leader, so the claim
    count shows two. When the link heals, its first write is refused. Epoch inversions in the dispatch log stay at
    zero throughout.
+
+7. **Optional, policy comparison.** Run the noisy-neighbour workload under `--policy wfq` and then under
+   `--policy fifo` (`make console-demo POLICY=fifo`), and compare the tenants panel. On this machine, one run
+   each: small tenants' p95 was about 435 ms under WFQ against tenant A's 2.8 s, and about 2.7 s, the same as A,
+   under FIFO (§4.3 measures this properly).
 
 A demo run is one observation on one machine. The measured distributions are on the research page.
 

@@ -79,6 +79,7 @@ func Handler(opt ServerOptions) http.Handler {
 	mux.HandleFunc("GET /api/v1/events", s.events)
 	mux.HandleFunc("GET /api/v1/dispatches", s.dispatches)
 	mux.HandleFunc("GET /api/v1/dlq", s.dlq)
+	mux.HandleFunc("GET /api/v1/tenants", s.tenants)
 	mux.HandleFunc("GET /api/v1/controls", s.controls)
 	mux.HandleFunc("POST /api/v1/faults", s.write(s.fault))
 	mux.HandleFunc("POST /api/v1/faults/clear", s.write(s.clear))
@@ -213,6 +214,24 @@ func (s *server) dispatches(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	out := SummariseDispatches(msgs, from, window, 250*time.Millisecond, dispatchCap)
+	out.ReadAt = now
+	writeJSON(w, http.StatusOK, out)
+}
+
+// resultsCap bounds one read of the results stream.
+const resultsCap = 20000
+
+func (s *server) tenants(w http.ResponseWriter, r *http.Request) {
+	window := time.Duration(clampInt(r.URL.Query().Get("window_s"), 120, 10, 600)) * time.Second
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+	defer cancel()
+	now := time.Now()
+	results, err := s.opt.Broker.ResultsSince(ctx, now.Add(-window), resultsCap)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "could not read the results stream: "+err.Error())
+		return
+	}
+	out := SummariseTenants(results, window, resultsCap)
 	out.ReadAt = now
 	writeJSON(w, http.StatusOK, out)
 }
