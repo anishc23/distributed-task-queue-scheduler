@@ -2053,7 +2053,7 @@ make verify             # format, vet, unit, integration
 make cover-all          # combined statement coverage over internal/
 ```
 
-Combined unit and integration coverage of `internal/` is **82.8%** of
+Combined unit and integration coverage of `internal/` is **82.7%** of
 statements. The remainder is mostly process assembly that only runs in a real
 deployment: dialling Redis, `SignalContext`, `Fail`, and the Sentinel discovery
 path, which needs a Sentinel cluster and is exercised by the store-failure
