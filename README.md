@@ -10,7 +10,11 @@ Go 1.23+ · Redis 7+ Streams · Prometheus · Docker Compose · kind · Python a
 **[Interactive results](https://anishc23.github.io/distributed-task-queue-scheduler/)** · [Report (PDF)](docs/report.pdf) ·
 [How the site and console work](docs/frontend.md)
 
----
+
+**2-minute demo:** a real leader crash, freeze and partition, recorded live.
+https://github.com/user-attachments/assets/94d5ab97-3043-44c5-8d12-ad7b6f62b35d
+
+
 
 ## The research question
 
