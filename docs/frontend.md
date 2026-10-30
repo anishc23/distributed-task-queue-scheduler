@@ -119,7 +119,9 @@ site. The research site never contacts the console, Redis or any other service.
 `cmd/console` is a small Go server. It polls a running queue and serves the same frontend's `#/live` page, plus a
 JSON API. It has two modes.
 
-**Monitor mode** watches an existing deployment and cannot change it. It reads Redis directly and scrapes the
+**Monitor mode** watches an existing deployment and cannot change it. In Compose or Kubernetes the lease records a
+container hostname, not a service name, so the page also names the service that reports itself leader under the
+lease's own epoch, when exactly one does. It reads Redis directly and scrapes the
 `/healthz`, `/readyz` and `/metrics` endpoints it is given. Without `--targets` it scrapes the two schedulers the
 Compose stack publishes on 9101 and 9103. Compose does not publish worker ports, so workers are not scraped there.
 
@@ -306,6 +308,7 @@ go test ./internal/console/                    # console unit tests: classificat
 TQ_TEST_REDIS_ADDR=localhost:6379 go test -tags integration ./internal/console/ ./internal/broker/
                                                # real binaries: kill and freeze the leader, check what is reported
 CONSOLE_E2E=1 npx playwright test -g "running console"   # with make console-demo running
+make compose-check                             # the Compose stack, watched by the console, leader killed under load
 ```
 
 The browser tests mock the console API to reach every connection state: no console, live, stale, not answering

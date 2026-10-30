@@ -457,6 +457,10 @@ demo-video: build ## Record the live-console walkthrough against a real demo clu
 	@$(MAKE) --no-print-directory redis-check
 	node web/scripts/record-demo.mjs --redis $(REDIS_ADDR)
 
+.PHONY: compose-check
+compose-check: ## End-to-end: Compose stack + console; kill the leader mid-workload and check every outcome (tears the stack down)
+	./scripts/compose-check.sh
+
 .PHONY: console
 console: build ## Live console watching the Compose stack (read-only), on http://127.0.0.1:8088
 	@test -f web/dist/index.html || $(MAKE) --no-print-directory web

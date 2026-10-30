@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { ConsoleEvent, DeadLetter, Snapshot, TenantWindow } from "./api";
-import { healthText, leaderVerdict } from "./connection";
+import { healthText, leaderVerdict, leaseHolderTarget } from "./connection";
 import type { LiveData } from "./useConsole";
 import { fmt, fmtInt } from "../lib/format";
 import { Table } from "../components/Controls";
@@ -117,7 +117,13 @@ export function Leadership({ snap }: { snap: Snapshot }) {
       ) : (
         <dl className="pairs">
           <dt>lease holder</dt>
-          <dd>{l.held ? <strong>{l.owner}</strong> : <span className="tag bad">none</span>}</dd>
+          <dd>
+            {l.held ? <strong>{l.owner}</strong> : <span className="tag bad">none</span>}
+            {l.held && (() => {
+              const name = leaseHolderTarget(l.epoch, snap.components);
+              return name && name !== l.owner ? <span className="small muted"> · that is {name}</span> : null;
+            })()}
+          </dd>
           <dt>epoch</dt>
           <dd className="num">{l.held ? l.epoch : "—"}</dd>
           <dt>lease expires in</dt>

@@ -306,3 +306,24 @@ jobs:
           python3 -m py_compile scripts/export_site_data.py
           set +e; python3 scripts/export_site_data.py --check; code=$?; set -e
           test "$code" = 2
+
+  compose:
+    name: Compose stack end to end
+    runs-on: ubuntu-latest
+    # Builds the image, starts the whole stack, kills the leading scheduler
+    # container mid-workload and checks, through the live console and
+    # Prometheus, that the standby takes over and nothing is lost or run twice.
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Kill the leader under load and check every outcome
+        run: ./scripts/compose-check.sh
+
+      - name: Stack logs, on failure
+        if: failure()
+        run: docker compose logs --no-color --tail 200

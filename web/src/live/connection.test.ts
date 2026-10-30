@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { backoffMs, connectionState, isStale, leaderVerdict, snapshotAgeMs } from "./connection";
+import { backoffMs, connectionState, isStale, leaderVerdict, leaseHolderTarget, snapshotAgeMs } from "./connection";
 
 const base = {
   hasData: true,
@@ -67,3 +67,19 @@ describe("leader verdict", () => {
     expect(leaderVerdict(2, true)).toMatchObject({ tone: "warn", label: "2 at once" });
   });
 });
+
+describe("lease holder", () => {
+  const sched = (name: string, leader: number, epoch: number) => ({ name, role: "scheduler", metrics: { tq_scheduler_is_leader: leader, tq_scheduler_leader_epoch: epoch } });
+
+  it("names the service that leads under the lease's own epoch", () => {
+    expect(leaseHolderTarget(2, [sched("scheduler", 0, 0), sched("scheduler-standby", 1, 2)])).toBe("scheduler-standby");
+  });
+
+  it("does not guess when the evidence is stale or ambiguous", () => {
+    // A superseded leader still claiming an older epoch is not the holder.
+    expect(leaseHolderTarget(3, [sched("a", 1, 2), sched("b", 0, 0)])).toBeNull();
+    expect(leaseHolderTarget(2, [sched("a", 1, 2), sched("b", 1, 2)])).toBeNull();
+    expect(leaseHolderTarget(undefined, [sched("a", 1, 2)])).toBeNull();
+  });
+});
+

@@ -1,0 +1,12 @@
+# The image is built from Go sources and configs/ only (deploy/docker/Dockerfile).
+# Without this, a local build sends results/ (gigabytes of benchmark output),
+# the frontend's node_modules and the git history to the Docker daemon.
+.git
+results/
+web/
+bench/
+bin/
+docs/
+.venv/
+coverage.out
+*.test

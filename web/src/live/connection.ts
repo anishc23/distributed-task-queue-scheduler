@@ -92,3 +92,22 @@ const HEALTH_TEXT: Record<string, { tone: "ok" | "warn" | "bad" | "unknown"; lab
 export function healthText(h: string) {
   return HEALTH_TEXT[h] ?? { tone: "unknown" as const, label: h };
 }
+
+/**
+ * Which scraped process holds the lease. The lease stores the scheduler's
+ * consumer name, which in Compose or Kubernetes is a container hostname rather
+ * than the service name the console scrapes. The match is the process that
+ * reports itself leader under the lease's own epoch; anything less is not a
+ * match, and the page then shows the raw owner alone.
+ */
+export function leaseHolderTarget(
+  epoch: number | undefined,
+  components: { name: string; role: string; metrics?: Record<string, number> }[],
+): string | null {
+  if (!epoch) return null;
+  const match = components.filter(
+    (c) => c.role === "scheduler" && c.metrics?.tq_scheduler_is_leader === 1 && c.metrics?.tq_scheduler_leader_epoch === epoch,
+  );
+  return match.length === 1 ? match[0]!.name : null;
+}
+

@@ -291,6 +291,7 @@ make check              # gofmt + go vet + unit tests
 make verify             # the above plus integration tests
 make cover              # unit-test coverage summary
 make cover-all          # combined unit + integration coverage
+make compose-check      # Compose stack end to end: kill the leader under load (needs Docker)
 ```
 
 Integration tests are behind the `integration` build tag, so `go test ./...`
@@ -2042,6 +2043,7 @@ the run has not been plotted.
 | Fault injection | The proxy forwards while healthy, kills established connections on a cut (not merely refusing new ones, which is what the store experiment depends on), refuses new connections while cut, restores service on heal, counts cuts idempotently, and survives an unreachable target |
 | Store durability | A leadership epoch that cannot be replicated is refused rather than used, and the grant is handed back so a peer can take it; with the wait disabled the acquire path is unchanged; a negative replica count is rejected at construction; Sentinel config requires a master name and addresses, bounds the wait, and is off by default |
 | Redis integration | Full ingress-to-results flow; atomic dispatch loses nothing; `max_in_flight` enforcement; idempotent completion under duplicate delivery; idempotent admission; retry counting through to dead-lettering with metadata; `XAUTOCLAIM` reclaim; scheduler state persistence; namespace reset |
+| Compose end to end | `make compose-check`, also run in CI: the full Compose stack under a 3,000-task workload, the leading scheduler container killed mid-run, then checked through the live console and Prometheus. The standby takes over under a newer epoch within the crash window, the dispatch log has no epoch inversion, every task completes and is recorded once, exactly one leader remains after the restart, and the console refuses to signal containers it did not start |
 | End-to-end | The benchmark harness completes every task and writes well-formed CSVs; a worker abandoning 100% of attempts dead-letters everything with correct attempt counts; with 35% intermittent failures every task still reaches a terminal state and no task is recorded twice |
 
 ```bash
