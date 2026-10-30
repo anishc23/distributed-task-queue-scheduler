@@ -7,7 +7,7 @@
   --panel: #fbfaf7;
   --ink: #1b1b1a;
   --ink-2: #4a4944;
-  --ink-3: #75736c;
+  --ink-3: #6b6962; /* 4.6:1 or better on every light ground, WCAG AA for small text */
   --rule: #d8d5cb;
   --rule-strong: #b9b5a8;
   --accent: #6b2f87;
@@ -116,6 +116,9 @@ pre {
   margin: 0 0 1em;
 }
 pre code { background: none; padding: 0; font-size: 1em; }
+/* Identifiers such as test names have no break points; on a phone they would
+   push the page sideways. Code blocks keep their lines and scroll instead. */
+:not(pre) > code { overflow-wrap: anywhere; }
 
 strong { font-weight: 600; }
 .num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
@@ -180,6 +183,7 @@ strong { font-weight: 600; }
   border: 1px solid var(--rule-strong);
 }
 .modes a {
+  white-space: nowrap;
   font-size: 0.8125rem;
   text-decoration: none;
   padding: 4px 12px;
@@ -299,6 +303,10 @@ figure.fig {
 }
 .fig-body { padding: 8px 14px 4px; min-height: 120px; }
 .fig-body svg { display: block; overflow: visible; }
+/* Plot scales its SVG down to fit (max-width: 100%), which on a phone shrinks
+   axis text past legibility. Charts keep their drawn size and scroll instead
+   (see Chart: below 560 px the frame scrolls sideways). */
+.fig-body svg, .panel svg { max-width: none !important; }
 figcaption {
   border-top: 1px solid var(--rule);
   padding: 10px 14px 12px;
@@ -314,7 +322,7 @@ figcaption p { max-width: none; margin-bottom: 0.5em; }
   line-height: 1.5;
 }
 .provenance summary { cursor: pointer; color: var(--ink-2); }
-.provenance dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 8px 0 0; }
+.provenance dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 12px; margin: 8px 0 0; }
 .provenance dt { color: var(--ink-3); }
 .provenance dd { margin: 0; overflow-wrap: anywhere; color: var(--ink-2); }
 
@@ -468,6 +476,9 @@ table.t td.num, table.t .num { font-family: var(--font-mono); font-variant-numer
 .facts dd { margin: 2px 0 0; font-size: 0.9375rem; }
 
 .two-col { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; }
+/* Grid items default to min-width: auto, so one long line in a code block
+   would widen its column past the screen instead of scrolling inside it. */
+.two-col > *, .live-row > *, .pairs > dd { min-width: 0; }
 
 .diagram svg { width: 100%; height: auto; display: block; }
 .diagram text { font-family: var(--font-mono); }
@@ -486,6 +497,19 @@ table.t td.num, table.t .num { font-family: var(--font-mono); font-variant-numer
   .facts > div:nth-child(3) { border-left: 0; padding-left: 0; }
   .two-col { grid-template-columns: minmax(0, 1fr); }
   h1 { font-size: 1.5rem; }
+}
+
+@media (max-width: 420px) {
+  .topbar-inner { gap: 10px; }
+  .wordmark { font-size: 0.8125rem; }
+  .modes a { padding: 4px 8px; }
+  .provenance dl { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 340px) {
+  .topbar-inner { gap: 8px; padding: 0 12px; }
+  .wordmark { font-size: 0.75rem; }
+  .modes a { padding: 4px 6px; font-size: 0.75rem; }
 }
 
 @media (prefers-reduced-motion: reduce) {

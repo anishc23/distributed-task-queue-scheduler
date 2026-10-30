@@ -191,7 +191,7 @@ export function Architecture() {
             from a counter. Every admission and dispatch script begins with this guard, so the epoch is checked inside the
             same atomic unit as the write it protects (comments added):
           </p>
-          <pre className="small">
+          <pre className="small" tabIndex={0}>
             <code>{`local function fenced(fenceKey, epoch)
   epoch = tonumber(epoch)
   if not epoch or epoch <= 0 then return false end  -- election off

@@ -116,7 +116,7 @@ test.describe("research site", () => {
     }
   });
 
-  for (const width of [1024, 768]) {
+  for (const width of [1024, 768, 390, 320]) {
     test(`no horizontal overflow at ${width}px`, async ({ page }) => {
       await page.setViewportSize({ width, height: 1000 });
       await page.goto("/");

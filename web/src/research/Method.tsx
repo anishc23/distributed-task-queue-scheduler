@@ -22,7 +22,7 @@ export function Method() {
             the workload; repetitions are the mitigation.
           </p>
           <h3>Offered load</h3>
-          <pre className="small">
+          <pre className="small" tabIndex={0}>
             <code>{`capacity     = worker_slots / mean_execution_seconds
 offered_load = mean_arrival_rate / capacity`}</code>
           </pre>
@@ -58,7 +58,7 @@ offered_load = mean_arrival_rate / capacity`}</code>
       <h3 style={{ marginTop: 10 }}>Every experiment, counted from the data</h3>
       <Loaded load={index} what="the experiment inventory">
         {(ix) => (
-          <div className="table-scroll">
+          <div className="table-scroll" tabIndex={0}>
             <Table
               caption="Experiment inventory"
               head={["experiment", "run directory", "experiments", "tasks"]}

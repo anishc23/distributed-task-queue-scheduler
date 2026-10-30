@@ -34,7 +34,7 @@ export function Fencing() {
         The scheduler log from one trial. The resume, the lease loss and the fence refusal all land within the same
         millisecond.
       </p>
-      <pre className="small">
+      <pre className="small" tabIndex={0}>
         <code>{`22:53:55.978  resumed the superseded leader   owner=sched-1 successor=sched-0
 22:53:55.978  lost the scheduler lease        owner=sched-1 epoch=1
 22:53:55.978  fenced out by a newer epoch, standing down   operation=dispatch`}</code>

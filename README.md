@@ -43,7 +43,7 @@ policies, compared carefully under controlled conditions.
 - **[Research](https://anishc23.github.io/distributed-task-queue-scheduler/)** is an interactive version of the report: architecture, method, and every result, with selectors over
   the real experiment data. Each chart names the CSV files it came from, with their SHA-256 digests, and the
   command that produced them. It is a static site; it needs nothing running.
-  `scripts/export_site_data.py` produces its data from `results/` and refuses to export unless all 74 numbers the
+  `scripts/export_site_data.py` produces its data from `results/` and refuses to export unless all 153 numbers the
   report quotes recompute from the raw CSVs. Building that check found four errors in the report, now corrected in
   §5.1.
 - **Live system** is an operations console for a running queue (`cmd/console`). It reads Redis and every process's

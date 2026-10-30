@@ -85,6 +85,12 @@ function ByArm({ d }: { d: Dataset<PartitionRow> }) {
   const long = row("long");
   const flap = row("flapping");
   const flapMaxGap = Math.max(...rows.filter((r) => r.arm === "flapping").map((r) => r.max_gap_ms ?? 0));
+  // Stated as counted, so the sentences cannot claim more than the data does.
+  const flapReplaced = rows.filter((r) => r.arm === "flapping" && r.failover);
+  const flapFenced = flapReplaced.filter((r) => r.fenced).length;
+  const healed = rows.filter((r) => r.arm !== "none" && r.leaders_after_heal !== null);
+  const oneAfterHeal = healed.filter((r) => r.leaders_after_heal === 1).length;
+  const longRest = long.n - long.fenced;
 
   return (
     <Figure
@@ -100,13 +106,15 @@ function ByArm({ d }: { d: Dataset<PartitionRow> }) {
             lease cost a median {fmtMs(long.med)}, well under the {fmtMs(long.cut)} cut, because a standby took over
             in {long.moved} of {long.n}; {long.inside} of {long.n} fall inside the same [{longWindow[0] / 1000} s,{" "}
             {longWindow[1] / 1000} s] window a crash does. When the path came back, the old leader was refused by the
-            fence in <strong>{long.fenced} of {long.n}</strong> and stood down on its own failed renewal in the rest.
+            fence in <strong>{long.fenced} of {long.n}</strong>
+            {longRest > 0 ? ` and stood down on its own failed renewal in the other ${longRest}` : ""}.
           </p>
           <p>
             Flapping the path {flap.cuts} times in {fmtMs(flap.cut)} moved leadership in {flap.moved} of {flap.n}{" "}
-            trials, and every returning leader in those {flap.moved} was fenced; no dispatch gap anywhere in the arm
-            exceeded {fmtMs(flapMaxGap)}. Across all {rows.length} trials: exactly one leader after every heal, epoch
-            inversions {inversions}, duplicate completions {dups}, tasks unfinished {fmtInt(unfinished)}.
+            trials, and the returning leader was fenced in {flapFenced === flapReplaced.length ? `all ${flapFenced}` : `${flapFenced} of those ${flapReplaced.length}`};
+            no dispatch gap anywhere in the arm exceeded {fmtMs(flapMaxGap)}. Across all {rows.length} trials: exactly
+            one leader after {oneAfterHeal === healed.length ? `every heal (${healed.length})` : `${oneAfterHeal} of ${healed.length} heals`},
+            epoch inversions {inversions}, duplicate completions {dups}, tasks unfinished {fmtInt(unfinished)}.
           </p>
         </>
       }
@@ -136,12 +144,12 @@ function ByArm({ d }: { d: Dataset<PartitionRow> }) {
         build={(w) =>
           Plot.plot({
             ...frame(w, 260),
-            marginLeft: 176,
+            marginLeft: 192,
             x: {
               label: "dispatch outage (ms, log scale)",
               type: "log",
               domain: [2, 20000],
-              ticks: [2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000],
+              ticks: [2, 10, 100, 1000, 5000, 20000],
               tickFormat: (v: number) => (v >= 1000 ? `${v / 1000} s` : `${v}`),
             },
             y: { label: null, domain: [...ARMS], tickFormat: (a: string) => ARM_LABEL[a] },

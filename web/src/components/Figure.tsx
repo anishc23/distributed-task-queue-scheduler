@@ -43,7 +43,7 @@ export function Figure({
         {table && (
           <details className="data-table">
             <summary>Numbers behind this chart</summary>
-            <div className="table-scroll">{table}</div>
+            <div className="table-scroll" tabIndex={0}>{table}</div>
           </details>
         )}
       </figcaption>
@@ -68,7 +68,7 @@ export function Provenance({ dataset, extra }: { dataset: Dataset<unknown>; extr
         ))}
         <dt>produced by</dt>
         <dd>
-          <pre style={{ margin: "2px 0", padding: "6px 8px", fontSize: "0.75rem" }}>
+          <pre tabIndex={0} style={{ margin: "2px 0", padding: "6px 8px", fontSize: "0.75rem" }}>
             <code>{dataset.command}</code>
           </pre>
         </dd>

@@ -62,7 +62,7 @@ export function Corrections() {
               </p>
               <details className="data-table">
                 <summary>All {ix.claims.length} checks</summary>
-                <div className="table-scroll">
+                <div className="table-scroll" tabIndex={0}>
                   <Table
                     caption="Every report claim recomputed"
                     head={["§", "claim", "report", "recomputed", "tolerance", ""]}

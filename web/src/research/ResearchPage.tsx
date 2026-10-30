@@ -1,19 +1,9 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { Overview } from "./Overview";
 import { Architecture } from "./Architecture";
 import { Method } from "./Method";
-import { LoadSweep } from "./LoadSweep";
-import { MainMatrix } from "./MainMatrix";
-import { Isolation } from "./Isolation";
-import { Cost } from "./Cost";
-import { Failover } from "./Failover";
-import { Fencing } from "./Fencing";
-import { StoreFault } from "./StoreFault";
-import { Partition } from "./Partition";
-import { RealWork } from "./RealWork";
-import { Corrections } from "./Corrections";
-import { Limitations } from "./Limitations";
-import { Reproduce } from "./Reproduce";
+
+const ResultSections = lazy(() => import("./ResultSections"));
 
 const SECTIONS: { group?: string; id: string; label: string }[] = [
   { id: "overview", label: "Overview" },
@@ -109,18 +99,9 @@ export function ResearchPage() {
         <Overview />
         <Architecture />
         <Method />
-        <LoadSweep />
-        <MainMatrix />
-        <Isolation />
-        <Cost />
-        <Failover />
-        <Fencing />
-        <StoreFault />
-        <Partition />
-        <RealWork />
-        <Corrections />
-        <Limitations />
-        <Reproduce />
+        <Suspense fallback={<p className="state-msg" aria-live="polite">Loading the results…</p>}>
+          <ResultSections />
+        </Suspense>
       </main>
     </div>
   );

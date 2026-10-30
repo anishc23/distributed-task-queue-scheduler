@@ -138,12 +138,12 @@ function ByArm({ d }: { d: Dataset<FailoverRow> }) {
         build={(w) =>
           Plot.plot({
             ...frame(w, 300),
-            marginLeft: 196,
+            marginLeft: 214,
             x: {
               label: "dispatch outage (ms, log scale)",
               type: "log",
               domain: [2, 30000],
-              ticks: [2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000],
+              ticks: [2, 10, 100, 1000, 5000, 20000],
               tickFormat: (v: number) => (v >= 1000 ? `${v / 1000} s` : `${v}`),
             },
             y: { label: null, domain: [...ARMS], tickFormat: (a: string) => ARM_LABEL[a] },
